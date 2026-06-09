@@ -1,0 +1,3 @@
+numpy
+zero-keras @ git+https://github.com/SamuelMarks/zero-keras.git@master
+ml-switcheroo-compiler @ git+https://github.com/SamuelMarks/ml-switcheroo-compiler.git@master
