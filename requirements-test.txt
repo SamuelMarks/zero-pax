@@ -1,0 +1,9 @@
+jax
+jaxlib
+flax
+praxis
+paxml
+tensorflow
+pytest
+pytest-cov
+numpy

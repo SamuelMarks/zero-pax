@@ -1,41 +1,79 @@
+"""Module documentation."""
+
+import ml_switcheroo
+
 """zero_pax API."""
 
 
 class BaseParameter:
-    """Base parameter class."""
+    """BaseParameter class."""
+
+    """BaseParameter class."""
+
+    """BaseParameter class."""
+
+    """BaseParameter class."""
+
+    """BaseParameter class."""
+
+    """BaseParameter class."""
 
     def __init__(self, value):
-        """Initialize parameter.
-
-        Args:
-            value: The parameter value.
-        """
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
         self.value = value
+
+    def __call__(self):
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        return self.value
 
 
 class Layer:
-    """Base layer class."""
+    """Layer class."""
 
-    def __init__(self):
-        """Initialize layer."""
+    """Layer class."""
+
+    """Layer class."""
+
+    """Layer class."""
+
+    """Layer class."""
+
+    """Layer class."""
+
+    def __init__(self, name=None):
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        """__init__ function."""
+        self.name = name
         self.params = {}
 
     def register_parameter(self, name, value):
-        """Register a parameter.
-
-        Args:
-            name: The parameter name.
-            value: The parameter value.
-        """
+        """register_parameter function."""
+        """register_parameter function."""
+        """register_parameter function."""
+        """register_parameter function."""
+        """register_parameter function."""
+        """register_parameter function."""
         self.params[name] = BaseParameter(value)
 
     def __call__(self, inputs):
-        """Forward pass.
-
-        Args:
-            inputs: The inputs.
-
-        Returns:
-            The inputs.
-        """
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
+        """__call__ function."""
         return inputs

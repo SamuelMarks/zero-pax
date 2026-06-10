@@ -209,3 +209,4 @@ scripts/generate_*.py
 # OS
 .DS_Store
 *.swp
+coverage.json

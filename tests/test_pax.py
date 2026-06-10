@@ -16,3 +16,11 @@ def test_layer():
     assert "w" in layer_obj.params
     assert layer_obj.params["w"].value == 2.0
     assert layer_obj(1) == 1
+
+
+def test_base_parameter_call():
+    """test_base_parameter_call docstring."""
+    from zero_pax import BaseParameter
+
+    p = BaseParameter(42.0)
+    assert p() == 42.0
