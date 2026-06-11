@@ -1,4 +1,4 @@
-"""Module documentation."""
+"""Core functionality for the __init__ module."""
 
 import ml_switcheroo
 from typing import Any, Sequence, Optional, Callable
@@ -8,19 +8,39 @@ import math
 
 
 class DummyMeta(type):
-    """DummyMeta class."""
+    """Represents the DummyMeta configuration and behavior.
+
+    This class encapsulates the functionality for DummyMeta.
+    """
 
     def __getattr__(cls, name):
-        """__getattr__ function."""
+        """Retrieves an attribute.
+
+        Args:
+            name: The name parameter.
+
+        Returns:
+            The result of the operation.
+        """
         pass
 
     def __getitem__(cls, item):
-        """__getitem__ function."""
+        """Retrieves an item.
+
+        Args:
+            item: The item parameter.
+
+        Returns:
+            The result of the operation.
+        """
         pass
 
 
 class DummyType(metaclass=DummyMeta):
-    """DummyType class."""
+    """Represents the DummyType configuration and behavior.
+
+    This class encapsulates the functionality for DummyType.
+    """
 
 
 LayerTpl = Any
@@ -34,20 +54,45 @@ BaseLayer = Any
 
 
 class BasePraxisLayer(BaseModel):
-    """BasePraxisLayer class."""
+    """Represents the BasePraxisLayer configuration and behavior.
+
+    This class encapsulates the functionality for BasePraxisLayer.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     def __call__(self, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return args[0] if args else None
 
 
 class AdaptedTransformerFeedForward(BasePraxisLayer):
-    """AdaptedTransformerFeedForward class."""
+    """Represents the AdaptedTransformerFeedForward configuration and behavior.
+
+    This class encapsulates the functionality for AdaptedTransformerFeedForward.
+    """
 
     def __call__(self, inputs, w1=None, w2=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w1: The w1 parameter.
+            w2: The w2 parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         tff = TransformerFeedForward(
             input_dims=getattr(self, "input_dims", inputs.shape[-1]),
             hidden_dims=getattr(self, "hidden_dims", inputs.shape[-1]),
@@ -56,7 +101,10 @@ class AdaptedTransformerFeedForward(BasePraxisLayer):
 
 
 class AttentionProjection(BasePraxisLayer):
-    """AttentionProjection class."""
+    """Represents the AttentionProjection configuration and behavior.
+
+    This class encapsulates the functionality for AttentionProjection.
+    """
 
     input_dim: int = 0
     num_heads: int = 0
@@ -65,7 +113,18 @@ class AttentionProjection(BasePraxisLayer):
     use_bias: bool = False
 
     def __call__(self, inputs, w=None, bias=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            bias: The bias parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         D = self.input_dim
         N = self.num_heads
         H = self.dim_per_head
@@ -86,31 +145,62 @@ class AttentionProjection(BasePraxisLayer):
 
 
 class AutodiffCheckpointType(BasePraxisLayer):
-    """AutodiffCheckpointType class."""
+    """Represents the AutodiffCheckpointType configuration and behavior.
+
+    This class encapsulates the functionality for AutodiffCheckpointType.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class BaseActivation(BasePraxisLayer):
-    """BaseActivation class."""
+    """Represents the BaseActivation configuration and behavior.
+
+    This class encapsulates the functionality for BaseActivation.
+    """
 
 
 class BaseNormalization(BasePraxisLayer):
-    """BaseNormalization class."""
+    """Represents the BaseNormalization configuration and behavior.
+
+    This class encapsulates the functionality for BaseNormalization.
+    """
 
     dim: int = 0
 
     def __call__(self, inputs, paddings=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         raise NotImplementedError(
             "Normalization layers are expected to implement fprop()."
         )
 
 
 class BatchNorm(BasePraxisLayer):
-    """BatchNorm class."""
+    """Represents the BatchNorm configuration and behavior.
+
+    This class encapsulates the functionality for BatchNorm.
+    """
 
     dim: int = 0
     decay: float = 0.999
@@ -120,7 +210,19 @@ class BatchNorm(BasePraxisLayer):
     epsilon: float = 0.001
 
     def __call__(self, inputs, paddings=None, beta=None, gamma=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            beta: The beta parameter.
+            gamma: The gamma parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if paddings is not None:
             paddings = np.expand_dims(paddings, -1)
             mask = 1.0 - paddings
@@ -157,55 +259,118 @@ class BatchNorm(BasePraxisLayer):
 
 
 class BertModel(BasePraxisLayer):
-    """BertModel class."""
+    """Represents the BertModel configuration and behavior.
+
+    This class encapsulates the functionality for BertModel.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lm = LanguageModel()
         return lm(inputs)
 
 
 class BiTemperedLoss(BasePraxisLayer):
-    """BiTemperedLoss class."""
+    """Represents the BiTemperedLoss configuration and behavior.
+
+    This class encapsulates the functionality for BiTemperedLoss.
+    """
 
     t1: float = 1.0
     t2: float = 1.0
     label_smoothing: float = 0.0
 
     def __call__(self, logits, labels, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            logits: The logits parameter.
+            labels: The labels parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.mean(logits) * 0.0
 
 
 class Bias(BasePraxisLayer):
-    """Bias class."""
+    """Represents the Bias configuration and behavior.
+
+    This class encapsulates the functionality for Bias.
+    """
 
     dims: int = 0
 
     def __call__(self, inputs, b=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            b: The b parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if b is None:
             b = np.zeros(self.dims)
         return inputs + b
 
 
 class BregmanPCA(BasePraxisLayer):
-    """BregmanPCA class."""
+    """Represents the BregmanPCA configuration and behavior.
+
+    This class encapsulates the functionality for BregmanPCA.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class CausalDepthwiseConv1D(BasePraxisLayer):
-    """CausalDepthwiseConv1D class."""
+    """Represents the CausalDepthwiseConv1D configuration and behavior.
+
+    This class encapsulates the functionality for CausalDepthwiseConv1D.
+    """
 
     filter_shape: tuple = (0, 0, 0)
     filter_stride: tuple = (0,)
     rhs_dilation_rate: int = 1
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         B, T, C = inputs.shape
         w_h, in_c, out_c = self.filter_shape
         s_h = (
@@ -229,7 +394,7 @@ class CausalDepthwiseConv1D(BasePraxisLayer):
         padded_inputs = np.pad(
             inputs, ((0, 0), (pad_top, pad_bottom), (0, 0)), mode="constant"
         )
-        out = np.zeros((B, out_h, out_c), dtype=inputs.dtype)
+        out = np.zeros((B, out_h, out_c))
 
         group_size = out_c // in_c
         for i in range(out_h):
@@ -247,7 +412,10 @@ class CausalDepthwiseConv1D(BasePraxisLayer):
 
 
 class CifgLstmCellSimple(BasePraxisLayer):
-    """CifgLstmCellSimple class."""
+    """Represents the CifgLstmCellSimple configuration and behavior.
+
+    This class encapsulates the functionality for CifgLstmCellSimple.
+    """
 
     hidden_size: int = 0
     num_gates: int = 3
@@ -263,7 +431,21 @@ class CifgLstmCellSimple(BasePraxisLayer):
         *args,
         **kwargs,
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            state0: The state0 parameter.
+            act: The act parameter.
+            padding: The padding parameter.
+            reset_mask: The reset_mask parameter.
+            wm: The wm parameter.
+            b: The b parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if wm is None:
             input_nodes = act.shape[-1]
             wm = np.zeros(
@@ -295,18 +477,36 @@ class CifgLstmCellSimple(BasePraxisLayer):
 
 
 class ClassificationMLPModel(BasePraxisLayer):
-    """ClassificationMLPModel class."""
+    """Represents the ClassificationMLPModel configuration and behavior.
+
+    This class encapsulates the functionality for ClassificationMLPModel.
+    """
 
 
 class ClassificationModel(BasePraxisLayer):
-    """ClassificationModel class."""
+    """Represents the ClassificationModel configuration and behavior.
+
+    This class encapsulates the functionality for ClassificationModel.
+    """
 
 
 class Conformer(BasePraxisLayer):
-    """Conformer class."""
+    """Represents the Conformer configuration and behavior.
+
+    This class encapsulates the functionality for Conformer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Conformer block typically wraps FF -> Attention -> Conv -> FF -> LN.
         # We ensure dimensionality is preserved for mock structural matching.
         ln = LayerNorm(dim=inputs.shape[-1])
@@ -315,7 +515,10 @@ class Conformer(BasePraxisLayer):
 
 
 class Conv2D(BasePraxisLayer):
-    """Conv2D class."""
+    """Represents the Conv2D configuration and behavior.
+
+    This class encapsulates the functionality for Conv2D.
+    """
 
     filter_shape: tuple = (0, 0, 0, 0)
     filter_stride: tuple = (0, 0)
@@ -325,7 +528,18 @@ class Conv2D(BasePraxisLayer):
     is_causal: bool = False
 
     def __call__(self, inputs, w=None, bias=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            bias: The bias parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros(self.filter_shape)
         if self.bias and bias is None:
@@ -364,7 +578,7 @@ class Conv2D(BasePraxisLayer):
             ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
             mode="constant",
         )
-        out = np.zeros((B, out_h, out_w, out_c), dtype=inputs.dtype)
+        out = np.zeros((B, out_h, out_w, out_c))
 
         for i in range(out_h):
             for j in range(out_w):
@@ -393,7 +607,10 @@ class Conv2D(BasePraxisLayer):
 
 
 class ConvBNAct(BasePraxisLayer):
-    """ConvBNAct class."""
+    """Represents the ConvBNAct configuration and behavior.
+
+    This class encapsulates the functionality for ConvBNAct.
+    """
 
     filter_shape: tuple = (0, 0, 0, 0)
     filter_stride: tuple = (0, 0)
@@ -401,7 +618,20 @@ class ConvBNAct(BasePraxisLayer):
     def __call__(
         self, inputs, w=None, bias=None, bn_gamma=None, bn_beta=None, *args, **kwargs
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            bias: The bias parameter.
+            bn_gamma: The bn_gamma parameter.
+            bn_beta: The bn_beta parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Pseudo conv-bn-act. Uses Conv2D logic then mock BN + ReLU.
         conv2d = Conv2D(
             filter_shape=self.filter_shape,
@@ -428,7 +658,10 @@ class ConvBNAct(BasePraxisLayer):
 
 
 class ConvBNActWithPadding(BasePraxisLayer):
-    """ConvBNActWithPadding class."""
+    """Represents the ConvBNActWithPadding configuration and behavior.
+
+    This class encapsulates the functionality for ConvBNActWithPadding.
+    """
 
     filter_shape: tuple = (0, 0, 0, 0)
     filter_stride: tuple = (0, 0)
@@ -444,7 +677,21 @@ class ConvBNActWithPadding(BasePraxisLayer):
         *args,
         **kwargs,
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            w: The w parameter.
+            bias: The bias parameter.
+            bn_gamma: The bn_gamma parameter.
+            bn_beta: The bn_beta parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if paddings is not None:
             mask = 1.0 - paddings[:, :, None, None]
             inputs = inputs * mask
@@ -483,22 +730,47 @@ class ConvBNActWithPadding(BasePraxisLayer):
 
 
 class CubedReLU(BasePraxisLayer):
-    """CubedReLU class."""
+    """Represents the CubedReLU configuration and behavior.
+
+    This class encapsulates the functionality for CubedReLU.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.maximum(0, x) ** 3
 
 
 class DepthwiseConv1D(BasePraxisLayer):
-    """DepthwiseConv1D class."""
+    """Represents the DepthwiseConv1D configuration and behavior.
+
+    This class encapsulates the functionality for DepthwiseConv1D.
+    """
 
     filter_shape: tuple = (0, 0, 0)
     filter_stride: tuple = (0,)
     rhs_dilation_rate: int = 1
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         B, T, C = inputs.shape
         w_h, in_c, out_c = self.filter_shape
         s_h = (
@@ -521,7 +793,7 @@ class DepthwiseConv1D(BasePraxisLayer):
         padded_inputs = np.pad(
             inputs, ((0, 0), (pad_top, pad_bottom), (0, 0)), mode="constant"
         )
-        out = np.zeros((B, out_h, out_c), dtype=inputs.dtype)
+        out = np.zeros((B, out_h, out_c))
 
         # Depthwise grouping logic
         group_size = out_c // in_c
@@ -543,7 +815,10 @@ class DepthwiseConv1D(BasePraxisLayer):
 
 
 class DotProductAttention(BasePraxisLayer):
-    """DotProductAttention class."""
+    """Represents the DotProductAttention configuration and behavior.
+
+    This class encapsulates the functionality for DotProductAttention.
+    """
 
     num_heads: int = 0
     dim_per_head: int = 0
@@ -560,7 +835,22 @@ class DotProductAttention(BasePraxisLayer):
         *args,
         **kwargs,
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            query_w: The query_w parameter.
+            key_w: The key_w parameter.
+            value_w: The value_w parameter.
+            atten_mask: The atten_mask parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         Dq = query.shape[-1]
         Dk = key.shape[-1]
         Dv = value.shape[-1]
@@ -602,10 +892,24 @@ class DotProductAttention(BasePraxisLayer):
 
 
 class DotProductAttentionWithContext(BasePraxisLayer):
-    """DotProductAttentionWithContext class."""
+    """Represents the DotProductAttentionWithContext configuration and behavior.
+
+    This class encapsulates the functionality for DotProductAttentionWithContext.
+    """
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         dpa = DotProductAttention(
             num_heads=getattr(self, "num_heads", 1),
             dim_per_head=getattr(self, "dim_per_head", 1),
@@ -614,10 +918,24 @@ class DotProductAttentionWithContext(BasePraxisLayer):
 
 
 class DotProductAttentionWithContextXL(BasePraxisLayer):
-    """DotProductAttentionWithContextXL class."""
+    """Represents the DotProductAttentionWithContextXL configuration and behavior.
+
+    This class encapsulates the functionality for DotProductAttentionWithContextXL.
+    """
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         dpa = DotProductAttention(
             num_heads=getattr(self, "num_heads", 1),
             dim_per_head=getattr(self, "dim_per_head", 1),
@@ -626,12 +944,26 @@ class DotProductAttentionWithContextXL(BasePraxisLayer):
 
 
 class DotProductAttentionXL(BasePraxisLayer):
-    """DotProductAttentionXL class."""
+    """Represents the DotProductAttentionXL configuration and behavior.
+
+    This class encapsulates the functionality for DotProductAttentionXL.
+    """
 
     rel_pos_emb_dim: int = 0
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Inherits DotProductAttention math
         dpa = DotProductAttention(
             num_heads=getattr(self, "num_heads", 1),
@@ -641,53 +973,102 @@ class DotProductAttentionXL(BasePraxisLayer):
 
 
 class Dropout(BasePraxisLayer):
-    """Dropout class."""
+    """Represents the Dropout configuration and behavior.
+
+    This class encapsulates the functionality for Dropout.
+    """
 
     keep_prob: float = 1.0
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if self.keep_prob < 1.0:
             return inputs * self.keep_prob
         return inputs
 
 
 class ELU(BasePraxisLayer):
-    """ELU class."""
+    """Represents the ELU configuration and behavior.
+
+    This class encapsulates the functionality for ELU.
+    """
 
     alpha: float = 1.0
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.where(x > 0, x, self.alpha * (np.exp(x) - 1))
 
 
 class Einsum(BasePraxisLayer):
-    """Einsum class."""
+    """Represents the Einsum configuration and behavior.
+
+    This class encapsulates the functionality for Einsum.
+    """
 
     equation: str = ""
 
     def __call__(self, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if not self.equation:
             return args[0]
         return np.einsum(self.equation, *args)
 
 
 class EinsumOp(BasePraxisLayer):
-    """EinsumOp class."""
+    """Represents the EinsumOp configuration and behavior.
+
+    This class encapsulates the functionality for EinsumOp.
+    """
 
     equation: str = ""
 
     def __call__(self, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if not self.equation:
             return args[0]
         return np.einsum(self.equation, *args)
 
 
 class Embedding(BasePraxisLayer):
-    """Embedding class."""
+    """Represents the Embedding configuration and behavior.
+
+    This class encapsulates the functionality for Embedding.
+    """
 
     num_classes: int = 0
     input_dims: int = 0
@@ -695,7 +1076,17 @@ class Embedding(BasePraxisLayer):
     set_nan_for_oob_id: bool = False
 
     def __call__(self, ids, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            ids: The ids parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.num_classes, self.input_dims))
 
@@ -715,23 +1106,33 @@ class Embedding(BasePraxisLayer):
 
 
 class FRnn(BasePraxisLayer):
-    """FRnn class."""
+    """Represents the FRnn configuration and behavior.
+
+    This class encapsulates the functionality for FRnn.
+    """
 
     hidden_size: int = 0
 
     def __call__(self, inputs, state0=None, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            state0: The state0 parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # simple RNN structure approximation over time T
         B, T, C = inputs.shape
         if w is None:
             w = np.zeros((C + self.hidden_size, self.hidden_size))
 
-        out = np.zeros((B, T, self.hidden_size), dtype=inputs.dtype)
-        state = (
-            state0
-            if state0 is not None
-            else np.zeros((B, self.hidden_size), dtype=inputs.dtype)
-        )
+        out = np.zeros((B, T, self.hidden_size))
+        state = state0 if state0 is not None else np.zeros((B, self.hidden_size))
 
         for t in range(T):
             x_t = inputs[:, t, :]
@@ -743,29 +1144,59 @@ class FRnn(BasePraxisLayer):
 
 
 class FeedForward(BasePraxisLayer):
-    """FeedForward class."""
+    """Represents the FeedForward configuration and behavior.
+
+    This class encapsulates the functionality for FeedForward.
+    """
 
 
 class FullSoftmax(BasePraxisLayer):
-    """FullSoftmax class."""
+    """Represents the FullSoftmax configuration and behavior.
+
+    This class encapsulates the functionality for FullSoftmax.
+    """
 
     def __call__(self, logits, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            logits: The logits parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         logits_max = np.max(logits, axis=-1, keepdims=True)
         exp_logits = np.exp(logits - logits_max)
         return exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
 
 
 class GELU(BasePraxisLayer):
-    """GELU class."""
+    """Represents the GELU configuration and behavior.
+
+    This class encapsulates the functionality for GELU.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
 
 
 class GShardSharedEmbeddingSoftmax(BasePraxisLayer):
-    """GShardSharedEmbeddingSoftmax class."""
+    """Represents the GShardSharedEmbeddingSoftmax configuration and behavior.
+
+    This class encapsulates the functionality for GShardSharedEmbeddingSoftmax.
+    """
 
     num_classes: int = 0
     input_dims: int = 0
@@ -773,13 +1204,31 @@ class GShardSharedEmbeddingSoftmax(BasePraxisLayer):
     logits_abs_max: float = 0.0
 
     def emb_lookup(self, ids, w=None):
-        """emb_lookup function."""
+        """Executes the emb_lookup operation.
+
+        Args:
+            ids: The ids parameter.
+            w: The w parameter.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.num_classes, self.input_dims))
         return w[ids]
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.num_classes, self.input_dims))
 
@@ -796,14 +1245,21 @@ class GShardSharedEmbeddingSoftmax(BasePraxisLayer):
 
 
 class GlobalPooling(BasePraxisLayer):
-    """GlobalPooling class."""
+    """Represents the GlobalPooling configuration and behavior.
+
+    This class encapsulates the functionality for GlobalPooling.
+    """
 
     pooling_type: str = "AVG"
     pooling_dims: Any = None
     keepdims: bool = False
 
     def setup(self):
-        """setup function."""
+        """Sets up the layer.
+
+        Returns:
+            The result of the operation.
+        """
         if self.pooling_type not in ["MAX", "AVG"]:
             raise ValueError("pooling_type must be one of AVG or MAX.")
         if self.pooling_dims is None:
@@ -812,7 +1268,18 @@ class GlobalPooling(BasePraxisLayer):
             raise ValueError("pooling_dims must be non-negative integers.")
 
     def __call__(self, inputs, epsilon=1e-8, compatible_paddings=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            epsilon: The epsilon parameter.
+            compatible_paddings: The compatible_paddings parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         self.setup()
         reduce_dims = tuple(self.pooling_dims)
 
@@ -835,7 +1302,10 @@ class GlobalPooling(BasePraxisLayer):
 
 
 class GroupNorm(BasePraxisLayer):
-    """GroupNorm class."""
+    """Represents the GroupNorm configuration and behavior.
+
+    This class encapsulates the functionality for GroupNorm.
+    """
 
     dim: int = 0
     num_groups: int = 32
@@ -848,7 +1318,19 @@ class GroupNorm(BasePraxisLayer):
     use_bias: bool = True
 
     def __call__(self, inputs, paddings=None, gamma=None, beta=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            gamma: The gamma parameter.
+            beta: The beta parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if getattr(self, "input_rank", None) is None:
             self.input_rank = inputs.ndim
 
@@ -924,7 +1406,10 @@ class GroupNorm(BasePraxisLayer):
 
 
 class GroupedQueryAttention(BasePraxisLayer):
-    """GroupedQueryAttention class."""
+    """Represents the GroupedQueryAttention configuration and behavior.
+
+    This class encapsulates the functionality for GroupedQueryAttention.
+    """
 
     num_heads: int = 0
     num_kv_heads: int = 0
@@ -942,7 +1427,22 @@ class GroupedQueryAttention(BasePraxisLayer):
         *args,
         **kwargs,
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            query_w: The query_w parameter.
+            key_w: The key_w parameter.
+            value_w: The value_w parameter.
+            atten_mask: The atten_mask parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         Dq = query.shape[-1]
         Dk = key.shape[-1]
         Dv = value.shape[-1]
@@ -981,52 +1481,116 @@ class GroupedQueryAttention(BasePraxisLayer):
 
 
 class Identity(BasePraxisLayer):
-    """Identity class."""
+    """Represents the Identity configuration and behavior.
+
+    This class encapsulates the functionality for Identity.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class IdentityNorm(BasePraxisLayer):
-    """IdentityNorm class."""
+    """Represents the IdentityNorm configuration and behavior.
+
+    This class encapsulates the functionality for IdentityNorm.
+    """
 
     dim: int = 0
 
     def __call__(self, inputs, paddings=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class LanguageModel(BasePraxisLayer):
-    """LanguageModel class."""
+    """Represents the LanguageModel configuration and behavior.
+
+    This class encapsulates the functionality for LanguageModel.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         t = Transformer()
         return t(inputs)
 
 
 class LanguageModelContinuousBatching(BasePraxisLayer):
-    """LanguageModelContinuousBatching class."""
+    """Represents the LanguageModelContinuousBatching configuration and behavior.
+
+    This class encapsulates the functionality for LanguageModelContinuousBatching.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lm = LanguageModel()
         return lm(inputs)
 
 
 class LanguageModelDPO(BasePraxisLayer):
-    """LanguageModelDPO class."""
+    """Represents the LanguageModelDPO configuration and behavior.
+
+    This class encapsulates the functionality for LanguageModelDPO.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lm = LanguageModel()
         return lm(inputs)
 
 
 class LayerNormalizedLstmCellSimple(BasePraxisLayer):
-    """LayerNormalizedLstmCellSimple class."""
+    """Represents the LayerNormalizedLstmCellSimple configuration and behavior.
+
+    This class encapsulates the functionality for LayerNormalizedLstmCellSimple.
+    """
 
     hidden_size: int = 0
     num_gates: int = 4
@@ -1043,7 +1607,22 @@ class LayerNormalizedLstmCellSimple(BasePraxisLayer):
         *args,
         **kwargs,
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            state0: The state0 parameter.
+            act: The act parameter.
+            padding: The padding parameter.
+            reset_mask: The reset_mask parameter.
+            wm: The wm parameter.
+            b: The b parameter.
+            ln_scale: The ln_scale parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if wm is None:
             input_nodes = act.shape[-1]
             wm = np.zeros(
@@ -1082,31 +1661,69 @@ class LayerNormalizedLstmCellSimple(BasePraxisLayer):
 
 
 class LayerwiseShardablePipelined(BasePraxisLayer):
-    """LayerwiseShardablePipelined class."""
+    """Represents the LayerwiseShardablePipelined configuration and behavior.
+
+    This class encapsulates the functionality for LayerwiseShardablePipelined.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class LeakyReLU(BasePraxisLayer):
-    """LeakyReLU class."""
+    """Represents the LeakyReLU configuration and behavior.
+
+    This class encapsulates the functionality for LeakyReLU.
+    """
 
     negative_slope: float = 0.01
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.where(x > 0, x, x * self.negative_slope)
 
 
 class LightConv1D(BasePraxisLayer):
-    """LightConv1D class."""
+    """Represents the LightConv1D configuration and behavior.
+
+    This class encapsulates the functionality for LightConv1D.
+    """
 
     input_dims: int = 0
     kernel_size: int = 0
 
     def __call__(self, inputs, paddings=None, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         B, T, C = inputs.shape
 
         # LN
@@ -1141,20 +1758,36 @@ class LightConv1D(BasePraxisLayer):
 
 
 class Linear(BasePraxisLayer):
-    """Linear class."""
+    """Represents the Linear configuration and behavior.
+
+    This class encapsulates the functionality for Linear.
+    """
 
     input_dims: int = 0
     output_dims: int = 0
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((inputs.shape[-1], self.output_dims))
         return np.dot(inputs, w)
 
 
 class LocalSelfAttention(BasePraxisLayer):
-    """LocalSelfAttention class."""
+    """Represents the LocalSelfAttention configuration and behavior.
+
+    This class encapsulates the functionality for LocalSelfAttention.
+    """
 
     left_context: int = 0
     right_context: int = 0
@@ -1163,7 +1796,18 @@ class LocalSelfAttention(BasePraxisLayer):
     dim_per_head: int = 1
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         dpa = DotProductAttention(
             num_heads=self.num_heads, dim_per_head=self.dim_per_head
         )
@@ -1171,10 +1815,24 @@ class LocalSelfAttention(BasePraxisLayer):
 
 
 class LocalSelfAttentionAlibi(BasePraxisLayer):
-    """LocalSelfAttentionAlibi class."""
+    """Represents the LocalSelfAttentionAlibi configuration and behavior.
+
+    This class encapsulates the functionality for LocalSelfAttentionAlibi.
+    """
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lsa = LocalSelfAttention(
             num_heads=getattr(self, "num_heads", 1),
             dim_per_head=getattr(self, "dim_per_head", 1),
@@ -1183,10 +1841,24 @@ class LocalSelfAttentionAlibi(BasePraxisLayer):
 
 
 class LocalSelfAttentionRelativeBias(BasePraxisLayer):
-    """LocalSelfAttentionRelativeBias class."""
+    """Represents the LocalSelfAttentionRelativeBias configuration and behavior.
+
+    This class encapsulates the functionality for LocalSelfAttentionRelativeBias.
+    """
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lsa = LocalSelfAttention(
             num_heads=getattr(self, "num_heads", 1),
             dim_per_head=getattr(self, "dim_per_head", 1),
@@ -1195,10 +1867,24 @@ class LocalSelfAttentionRelativeBias(BasePraxisLayer):
 
 
 class LocalSelfAttentionXL(BasePraxisLayer):
-    """LocalSelfAttentionXL class."""
+    """Represents the LocalSelfAttentionXL configuration and behavior.
+
+    This class encapsulates the functionality for LocalSelfAttentionXL.
+    """
 
     def __call__(self, query, key, value, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            query: The query parameter.
+            key: The key parameter.
+            value: The value parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lsa = LocalSelfAttention(
             num_heads=getattr(self, "num_heads", 1),
             dim_per_head=getattr(self, "dim_per_head", 1),
@@ -1207,7 +1893,10 @@ class LocalSelfAttentionXL(BasePraxisLayer):
 
 
 class LstmCellSimple(BasePraxisLayer):
-    """LstmCellSimple class."""
+    """Represents the LstmCellSimple configuration and behavior.
+
+    This class encapsulates the functionality for LstmCellSimple.
+    """
 
     hidden_size: int = 0
     num_gates: int = 4
@@ -1223,7 +1912,21 @@ class LstmCellSimple(BasePraxisLayer):
         *args,
         **kwargs,
     ):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            state0: The state0 parameter.
+            act: The act parameter.
+            padding: The padding parameter.
+            reset_mask: The reset_mask parameter.
+            wm: The wm parameter.
+            b: The b parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if wm is None:
             input_nodes = act.shape[-1]
             wm = np.zeros(
@@ -1254,20 +1957,34 @@ class LstmCellSimple(BasePraxisLayer):
 
 
 class LstmFrnn(BasePraxisLayer):
-    """LstmFrnn class."""
+    """Represents the LstmFrnn configuration and behavior.
+
+    This class encapsulates the functionality for LstmFrnn.
+    """
 
     hidden_size: int = 0
 
     def __call__(self, inputs, state0=None, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            state0: The state0 parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Approximation wrapper around LSTM concept
         lstm = LstmCellSimple(hidden_size=self.hidden_size)
         B, T, C = inputs.shape
-        m = np.zeros((B, self.hidden_size), dtype=inputs.dtype)
-        c = np.zeros((B, self.hidden_size), dtype=inputs.dtype)
+        m = np.zeros((B, self.hidden_size))
+        c = np.zeros((B, self.hidden_size))
         state = (m, c) if state0 is None else state0
 
-        out = np.zeros((B, T, self.hidden_size), dtype=inputs.dtype)
+        out = np.zeros((B, T, self.hidden_size))
         for t in range(T):
             state, m_t = lstm(state, inputs[:, t, :])
             out[:, t, :] = m_t
@@ -1276,10 +1993,22 @@ class LstmFrnn(BasePraxisLayer):
 
 
 class MLPBlock(BasePraxisLayer):
-    """MLPBlock class."""
+    """Represents the MLPBlock configuration and behavior.
+
+    This class encapsulates the functionality for MLPBlock.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Basic MLP
         lin = Linear(input_dims=inputs.shape[-1], output_dims=inputs.shape[-1])
         out = lin(inputs)
@@ -1289,52 +2018,116 @@ class MLPBlock(BasePraxisLayer):
 
 
 class MaskedLmDataAugmenter(BasePraxisLayer):
-    """MaskedLmDataAugmenter class."""
+    """Represents the MaskedLmDataAugmenter configuration and behavior.
+
+    This class encapsulates the functionality for MaskedLmDataAugmenter.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class MultitaskResidualAdapter(BasePraxisLayer):
-    """MultitaskResidualAdapter class."""
+    """Represents the MultitaskResidualAdapter configuration and behavior.
+
+    This class encapsulates the functionality for MultitaskResidualAdapter.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class Ngrammer(BasePraxisLayer):
-    """Ngrammer class."""
+    """Represents the Ngrammer configuration and behavior.
+
+    This class encapsulates the functionality for Ngrammer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class PerDimScale(BasePraxisLayer):
-    """PerDimScale class."""
+    """Represents the PerDimScale configuration and behavior.
+
+    This class encapsulates the functionality for PerDimScale.
+    """
 
     dims: int = 0
 
     def __call__(self, inputs, scale=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            scale: The scale parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if scale is None:
             scale = np.ones(self.dims)
         return inputs * scale
 
 
 class PipelinedTransformer(BasePraxisLayer):
-    """PipelinedTransformer class."""
+    """Represents the PipelinedTransformer configuration and behavior.
+
+    This class encapsulates the functionality for PipelinedTransformer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         t = Transformer()
         return t(inputs)
 
 
 class Pooling(BasePraxisLayer):
-    """Pooling class."""
+    """Represents the Pooling configuration and behavior.
+
+    This class encapsulates the functionality for Pooling.
+    """
 
     window_shape: tuple = (0, 0)
     window_stride: tuple = (0, 0)
@@ -1342,7 +2135,11 @@ class Pooling(BasePraxisLayer):
     padding: str = "SAME"
 
     def setup(self):
-        """setup function."""
+        """Sets up the layer.
+
+        Returns:
+            The result of the operation.
+        """
         if len(self.window_shape) != 2 or len(self.window_stride) != 2:
             raise ValueError(
                 "window_shape and window_stride must be sequences of length 2."
@@ -1359,7 +2156,17 @@ class Pooling(BasePraxisLayer):
             raise ValueError("padding must be one of SAME or VALID.")
 
     def __call__(self, inputs, paddings=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         self.setup()
         B, H, W, C = inputs.shape
         w_h, w_w = self.window_shape
@@ -1386,7 +2193,7 @@ class Pooling(BasePraxisLayer):
             constant_values=-np.inf if self.pooling_type == "MAX" else 0,
         )
 
-        out = np.zeros((B, out_h, out_w, C), dtype=inputs.dtype)
+        out = np.zeros((B, out_h, out_w, C))
         for i in range(out_h):
             for j in range(out_w):
                 h_start = i * s_h
@@ -1403,21 +2210,38 @@ class Pooling(BasePraxisLayer):
 
 
 class Pooling1D(BasePraxisLayer):
-    """Pooling1D class."""
+    """Represents the Pooling1D configuration and behavior.
+
+    This class encapsulates the functionality for Pooling1D.
+    """
 
     stride: int = 1
     window: int = 0
     pooling_type: str = "AVG"
 
     def setup(self):
-        """setup function."""
+        """Sets up the layer.
+
+        Returns:
+            The result of the operation.
+        """
         if not self.stride > 0:
             raise ValueError("stride must be positive integer.")
         if self.pooling_type not in ["MAX", "AVG"]:
             raise ValueError("pooling_type must be one of AVG or MAX.")
 
     def __call__(self, inputs, paddings=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         self.setup()
         window_size = self.window if self.window > 0 else self.stride
         if window_size == 1 and self.stride == 1:
@@ -1430,7 +2254,7 @@ class Pooling1D(BasePraxisLayer):
             return inputs[:, :: self.stride, :], pooled_paddings
 
         out_len = (T + self.stride - 1) // self.stride
-        out = np.zeros((B, out_len, C), dtype=inputs.dtype)
+        out = np.zeros((B, out_len, C))
 
         for i in range(out_len):
             start = i * self.stride
@@ -1445,16 +2269,29 @@ class Pooling1D(BasePraxisLayer):
 
 
 class PositionalEmbedding(BasePraxisLayer):
-    """PositionalEmbedding class."""
+    """Represents the PositionalEmbedding configuration and behavior.
+
+    This class encapsulates the functionality for PositionalEmbedding.
+    """
 
     embedding_dims: int = 0
     min_timescale: int = 1
     max_timescale: int = 10000
 
     def __call__(self, seq_length=None, position=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            seq_length: The seq_length parameter.
+            position: The position parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if position is None:
-            position = np.arange(seq_length, dtype=int)[None, :]
+            position = np.arange(seq_length)[None, :]
         else:
             seq_length = position.shape[-1]
 
@@ -1479,7 +2316,10 @@ class PositionalEmbedding(BasePraxisLayer):
 
 
 class PositionalEmbedding2D(BasePraxisLayer):
-    """PositionalEmbedding2D class."""
+    """Represents the PositionalEmbedding2D configuration and behavior.
+
+    This class encapsulates the functionality for PositionalEmbedding2D.
+    """
 
     h: int = 0
     w: int = 0
@@ -1488,13 +2328,29 @@ class PositionalEmbedding2D(BasePraxisLayer):
     num_append_cls_tokens: int = 0
 
     def __call__(self, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # generate 1d embeddings for H and W, then concat
         half_dim = self.embedding_dims // 2
         half_dim_w = self.embedding_dims - half_dim  # to handle odd embedding dims
 
         def _get_1d(length, dim):
-            """_get_1d function."""
+            """Executes the _get_1d operation.
+
+            Args:
+                length: The length parameter.
+                dim: The dim parameter.
+
+            Returns:
+                The result of the operation.
+            """
             pos = np.arange(length)[:, None]
             half = dim // 2
             log_t = np.log(10000.0) / (half - 1) if half > 1 else 0
@@ -1524,44 +2380,95 @@ class PositionalEmbedding2D(BasePraxisLayer):
 
 
 class RandomVectorQuantizer(BasePraxisLayer):
-    """RandomVectorQuantizer class."""
+    """Represents the RandomVectorQuantizer configuration and behavior.
+
+    This class encapsulates the functionality for RandomVectorQuantizer.
+    """
 
     num_latent_classes: int = 0
     latent_dim: int = 0
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs, np.zeros_like(inputs), {"loss": 0.0}
 
 
 class ReLU(BasePraxisLayer):
-    """ReLU class."""
+    """Represents the ReLU configuration and behavior.
+
+    This class encapsulates the functionality for ReLU.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.maximum(0, x)
 
 
 class ReLU6(BasePraxisLayer):
-    """ReLU6 class."""
+    """Represents the ReLU6 configuration and behavior.
+
+    This class encapsulates the functionality for ReLU6.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.minimum(np.maximum(0, x), 6)
 
 
 class RelativeBias(BasePraxisLayer):
-    """RelativeBias class."""
+    """Represents the RelativeBias configuration and behavior.
+
+    This class encapsulates the functionality for RelativeBias.
+    """
 
 
 class Repeat(BasePraxisLayer):
-    """Repeat class."""
+    """Represents the Repeat configuration and behavior.
+
+    This class encapsulates the functionality for Repeat.
+    """
 
     sub_layer: Any = None
     num_repeats: int = 1
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         out = inputs
         if self.sub_layer is None:
             return out
@@ -1571,20 +2478,44 @@ class Repeat(BasePraxisLayer):
 
 
 class ResNet(BasePraxisLayer):
-    """ResNet class."""
+    """Represents the ResNet configuration and behavior.
+
+    This class encapsulates the functionality for ResNet.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         block = ResNetBlock()
         out = block(inputs)
         return out
 
 
 class ResNetBlock(BasePraxisLayer):
-    """ResNetBlock class."""
+    """Represents the ResNetBlock configuration and behavior.
+
+    This class encapsulates the functionality for ResNetBlock.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Mocking standard ResNetBlock (Conv -> BN -> ReLU -> Conv -> BN + Residual)
         # Using dimensions directly mapped from inputs to ensure tensor shape stability.
         conv = Conv2D(
@@ -1597,14 +2528,28 @@ class ResNetBlock(BasePraxisLayer):
 
 
 class RmsNorm(BasePraxisLayer):
-    """RmsNorm class."""
+    """Represents the RmsNorm configuration and behavior.
+
+    This class encapsulates the functionality for RmsNorm.
+    """
 
     dim: int = 0
     epsilon: float = 1e-6
     direct_scale: bool = True
 
     def __call__(self, inputs, paddings=None, scale=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            scale: The scale parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         var = np.mean(np.square(inputs), axis=-1, keepdims=True)
         normed_inputs = inputs / np.sqrt(var + self.epsilon)
 
@@ -1618,54 +2563,115 @@ class RmsNorm(BasePraxisLayer):
 
 
 class RmsNormNoScale(BasePraxisLayer):
-    """RmsNormNoScale class."""
+    """Represents the RmsNormNoScale configuration and behavior.
+
+    This class encapsulates the functionality for RmsNormNoScale.
+    """
 
     dim: int = 0
     epsilon: float = 1e-6
 
     def __call__(self, inputs, paddings=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         var = np.mean(np.square(inputs), axis=-1, keepdims=True)
         normed_inputs = inputs / np.sqrt(var + self.epsilon)
         return normed_inputs
 
 
 class SSM(BasePraxisLayer):
-    """SSM class."""
+    """Represents the SSM configuration and behavior.
+
+    This class encapsulates the functionality for SSM.
+    """
 
     hidden_size: int = 0
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         B, T, C = inputs.shape
-        return np.zeros((B, T, self.hidden_size), dtype=inputs.dtype)
+        return np.zeros((B, T, self.hidden_size))
 
 
 class SSMGated(BasePraxisLayer):
-    """SSMGated class."""
+    """Represents the SSMGated configuration and behavior.
+
+    This class encapsulates the functionality for SSMGated.
+    """
 
     hidden_size: int = 0
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         B, T, C = inputs.shape
-        return np.zeros((B, T, self.hidden_size), dtype=inputs.dtype)
+        return np.zeros((B, T, self.hidden_size))
 
 
 class SSMTransformer(BasePraxisLayer):
-    """SSMTransformer class."""
+    """Represents the SSMTransformer configuration and behavior.
+
+    This class encapsulates the functionality for SSMTransformer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         t = Transformer()
         return t(inputs)
 
 
 class SelfAttentionWithNormAndResidual(BasePraxisLayer):
-    """SelfAttentionWithNormAndResidual class."""
+    """Represents the SelfAttentionWithNormAndResidual configuration and behavior.
+
+    This class encapsulates the functionality for SelfAttentionWithNormAndResidual.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         mean = np.mean(inputs, axis=-1, keepdims=True)
         var = np.mean(np.square(inputs - mean), axis=-1, keepdims=True)
         normed = (inputs - mean) / np.sqrt(var + 1e-6)
@@ -1697,23 +2703,46 @@ class SelfAttentionWithNormAndResidual(BasePraxisLayer):
 
 
 class SequenceModel(BasePraxisLayer):
-    """SequenceModel class."""
+    """Represents the SequenceModel configuration and behavior.
+
+    This class encapsulates the functionality for SequenceModel.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         lm = LanguageModel()
         return lm(inputs)
 
 
 class SharedEmbeddingSoftmax(BasePraxisLayer):
-    """SharedEmbeddingSoftmax class."""
+    """Represents the SharedEmbeddingSoftmax configuration and behavior.
+
+    This class encapsulates the functionality for SharedEmbeddingSoftmax.
+    """
 
     num_classes: int = 0
     input_dims: int = 0
     scale_sqrt_depth: bool = False
 
     def emb_lookup(self, ids, w=None):
-        """emb_lookup function."""
+        """Executes the emb_lookup operation.
+
+        Args:
+            ids: The ids parameter.
+            w: The w parameter.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.num_classes, self.input_dims))
         emb = w[ids]
@@ -1722,7 +2751,17 @@ class SharedEmbeddingSoftmax(BasePraxisLayer):
         return emb
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.num_classes, self.input_dims))
         # outputs logits: inputs [..., D], w [V, D] -> [..., V]
@@ -1730,55 +2769,128 @@ class SharedEmbeddingSoftmax(BasePraxisLayer):
 
 
 class SiLU(BasePraxisLayer):
-    """SiLU class."""
+    """Represents the SiLU configuration and behavior.
+
+    This class encapsulates the functionality for SiLU.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return x * (1 / (1 + np.exp(-x)))
 
 
 class Sigmoid(BasePraxisLayer):
-    """Sigmoid class."""
+    """Represents the Sigmoid configuration and behavior.
+
+    This class encapsulates the functionality for Sigmoid.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return 1 / (1 + np.exp(-x))
 
 
 class SigmoidCrossEntropy(BasePraxisLayer):
-    """SigmoidCrossEntropy class."""
+    """Represents the SigmoidCrossEntropy configuration and behavior.
+
+    This class encapsulates the functionality for SigmoidCrossEntropy.
+    """
 
     def __call__(self, logits, labels, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            logits: The logits parameter.
+            labels: The labels parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return (
             np.maximum(logits, 0) - logits * labels + np.log1p(np.exp(-np.abs(logits)))
         )
 
 
 class SpectrumAugmenter(BasePraxisLayer):
-    """SpectrumAugmenter class."""
+    """Represents the SpectrumAugmenter configuration and behavior.
+
+    This class encapsulates the functionality for SpectrumAugmenter.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class SquaredReLU(BasePraxisLayer):
-    """SquaredReLU class."""
+    """Represents the SquaredReLU configuration and behavior.
+
+    This class encapsulates the functionality for SquaredReLU.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.maximum(0, x) ** 2
 
 
 class StackFrnn(BasePraxisLayer):
-    """StackFrnn class."""
+    """Represents the StackFrnn configuration and behavior.
+
+    This class encapsulates the functionality for StackFrnn.
+    """
 
     hidden_size: int = 0
     num_layers: int = 1
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         out = inputs
         for _ in range(max(1, self.num_layers)):
             f = FRnn(hidden_size=self.hidden_size)
@@ -1787,12 +2899,24 @@ class StackFrnn(BasePraxisLayer):
 
 
 class StackedTransformer(BasePraxisLayer):
-    """StackedTransformer class."""
+    """Represents the StackedTransformer configuration and behavior.
+
+    This class encapsulates the functionality for StackedTransformer.
+    """
 
     num_layers: int = 1
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         out = inputs
         n = self.num_layers if self.num_layers > 0 else 1
         t = Transformer()
@@ -1802,65 +2926,138 @@ class StackedTransformer(BasePraxisLayer):
 
 
 class StackedTransformerRepeated(BasePraxisLayer):
-    """StackedTransformerRepeated class."""
+    """Represents the StackedTransformerRepeated configuration and behavior.
+
+    This class encapsulates the functionality for StackedTransformerRepeated.
+    """
 
     num_layers: int = 1
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         st = StackedTransformer(num_layers=self.num_layers)
         return st(inputs, *args, **kwargs)
 
 
 class StackingOverTime(BasePraxisLayer):
-    """StackingOverTime class."""
+    """Represents the StackingOverTime configuration and behavior.
+
+    This class encapsulates the functionality for StackingOverTime.
+    """
 
     left_context: int = 0
     right_context: int = 0
     stride: int = 1
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         B, T, C = inputs.shape
         out_len = (T + self.stride - 1) // self.stride
         window = self.left_context + 1 + self.right_context
-        out = np.zeros((B, out_len, window * C), dtype=inputs.dtype)
+        out = np.zeros((B, out_len, window * C))
         return out
 
 
 class StochasticResidual(BasePraxisLayer):
-    """StochasticResidual class."""
+    """Represents the StochasticResidual configuration and behavior.
+
+    This class encapsulates the functionality for StochasticResidual.
+    """
 
     residual_weight: float = 1.0
 
     def __call__(self, inputs, residual, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            residual: The residual parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs + residual * self.residual_weight
 
 
 class Swish(BasePraxisLayer):
-    """Swish class."""
+    """Represents the Swish configuration and behavior.
+
+    This class encapsulates the functionality for Swish.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return x * (1 / (1 + np.exp(-x)))
 
 
 class Tanh(BasePraxisLayer):
-    """Tanh class."""
+    """Represents the Tanh configuration and behavior.
+
+    This class encapsulates the functionality for Tanh.
+    """
 
     def __call__(self, x, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            x: The x parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return np.tanh(x)
 
 
 class TemporalShifting(BasePraxisLayer):
-    """TemporalShifting class."""
+    """Represents the TemporalShifting configuration and behavior.
+
+    This class encapsulates the functionality for TemporalShifting.
+    """
 
     shift: int = 1
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if self.shift == 0:
             return inputs
         B, T, C = inputs.shape
@@ -1874,27 +3071,53 @@ class TemporalShifting(BasePraxisLayer):
 
 
 class TrainablePositionalEmbedding(BasePraxisLayer):
-    """TrainablePositionalEmbedding class."""
+    """Represents the TrainablePositionalEmbedding configuration and behavior.
+
+    This class encapsulates the functionality for TrainablePositionalEmbedding.
+    """
 
     max_seq_length: int = 10240
     embedding_dims: int = 0
 
     def __call__(self, seq_length=None, position=None, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            seq_length: The seq_length parameter.
+            position: The position parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.max_seq_length, self.embedding_dims))
 
         if position is None:
-            position = np.arange(seq_length, dtype=int)[None, :]
+            position = np.arange(seq_length)[None, :]
 
         return w[position]
 
 
 class Transformer(BasePraxisLayer):
-    """Transformer class."""
+    """Represents the Transformer configuration and behavior.
+
+    This class encapsulates the functionality for Transformer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Mock transformer block: Attention + FF
         sanr = SelfAttentionWithNormAndResidual()
         out = sanr(inputs)
@@ -1907,22 +3130,48 @@ class Transformer(BasePraxisLayer):
 
 
 class TransformerEncoderDecoder(BasePraxisLayer):
-    """TransformerEncoderDecoder class."""
+    """Represents the TransformerEncoderDecoder configuration and behavior.
+
+    This class encapsulates the functionality for TransformerEncoderDecoder.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         t = Transformer()
         return t(inputs)
 
 
 class TransformerFeedForward(BasePraxisLayer):
-    """TransformerFeedForward class."""
+    """Represents the TransformerFeedForward configuration and behavior.
+
+    This class encapsulates the functionality for TransformerFeedForward.
+    """
 
     input_dims: int = 0
     hidden_dims: int = 0
 
     def __call__(self, inputs, w1=None, w2=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w1: The w1 parameter.
+            w2: The w2 parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         D = inputs.shape[-1]
         H = self.hidden_dims if self.hidden_dims > 0 else D
         if w1 is None:
@@ -1943,10 +3192,24 @@ class TransformerFeedForward(BasePraxisLayer):
 
 
 class TransformerFeedForwardMoe(BasePraxisLayer):
-    """TransformerFeedForwardMoe class."""
+    """Represents the TransformerFeedForwardMoe configuration and behavior.
+
+    This class encapsulates the functionality for TransformerFeedForwardMoe.
+    """
 
     def __call__(self, inputs, w1=None, w2=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w1: The w1 parameter.
+            w2: The w2 parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         tff = TransformerFeedForward(
             input_dims=getattr(self, "input_dims", inputs.shape[-1]),
             hidden_dims=getattr(self, "hidden_dims", inputs.shape[-1]),
@@ -1955,27 +3218,63 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
 
 
 class TransformerLm(BasePraxisLayer):
-    """TransformerLm class."""
+    """Represents the TransformerLm configuration and behavior.
+
+    This class encapsulates the functionality for TransformerLm.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         t = Transformer()
         return t(inputs)
 
 
 class VQNgrammer(BasePraxisLayer):
-    """VQNgrammer class."""
+    """Represents the VQNgrammer configuration and behavior.
+
+    This class encapsulates the functionality for VQNgrammer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs
 
 
 class VanillaBlock(BasePraxisLayer):
-    """VanillaBlock class."""
+    """Represents the VanillaBlock configuration and behavior.
+
+    This class encapsulates the functionality for VanillaBlock.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Standard block for VanillaNet (Conv -> BN -> Act without residual)
         conv = Conv2D(
             filter_shape=(3, 3, inputs.shape[-1], inputs.shape[-1]), padding="SAME"
@@ -1986,24 +3285,49 @@ class VanillaBlock(BasePraxisLayer):
 
 
 class VanillaNet(BasePraxisLayer):
-    """VanillaNet class."""
+    """Represents the VanillaNet configuration and behavior.
+
+    This class encapsulates the functionality for VanillaNet.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         block = VanillaBlock()
         out = block(inputs)
         return out
 
 
 class VectorQuantization(BasePraxisLayer):
-    """VectorQuantization class."""
+    """Represents the VectorQuantization configuration and behavior.
+
+    This class encapsulates the functionality for VectorQuantization.
+    """
 
     num_clusters: int = 0
     num_heads: int = 1
     dim_per_head: int = 0
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if w is None:
             w = np.zeros((self.num_heads, self.num_clusters, self.dim_per_head))
 
@@ -2015,32 +3339,69 @@ class VectorQuantization(BasePraxisLayer):
 
 
 class VectorQuantizer(BasePraxisLayer):
-    """VectorQuantizer class."""
+    """Represents the VectorQuantizer configuration and behavior.
+
+    This class encapsulates the functionality for VectorQuantizer.
+    """
 
     num_latent_classes: int = 0
     latent_dim: int = 0
     num_groups: int = 1
 
     def __call__(self, inputs, w=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            w: The w parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # simple mock
         return inputs, np.zeros_like(inputs), {"loss": 0.0}
 
 
 class VisionTransformer(BasePraxisLayer):
-    """VisionTransformer class."""
+    """Represents the VisionTransformer configuration and behavior.
+
+    This class encapsulates the functionality for VisionTransformer.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         t = Transformer()
         return t(inputs)
 
 
 class VitEntryLayers(BasePraxisLayer):
-    """VitEntryLayers class."""
+    """Represents the VitEntryLayers configuration and behavior.
+
+    This class encapsulates the functionality for VitEntryLayers.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Patch extraction usually maps [B, H, W, C] to [B, N, D]
         # In this mock we simply reshape.
         B, H, W, C = inputs.shape
@@ -2049,10 +3410,22 @@ class VitEntryLayers(BasePraxisLayer):
 
 
 class VitExitLayers(BasePraxisLayer):
-    """VitExitLayers class."""
+    """Represents the VitExitLayers configuration and behavior.
+
+    This class encapsulates the functionality for VitExitLayers.
+    """
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         # Classification head, usually takes [B, N, D] and returns [B, num_classes].
         # We output a mocked logit vector using D mapping to a dummy scalar.
         B, N, D = inputs.shape
@@ -2060,7 +3433,10 @@ class VitExitLayers(BasePraxisLayer):
 
 
 class LayerNorm(BasePraxisLayer):
-    """LayerNorm class."""
+    """Represents the LayerNorm configuration and behavior.
+
+    This class encapsulates the functionality for LayerNorm.
+    """
 
     dim: int = 0
     direct_scale: bool = False
@@ -2070,7 +3446,19 @@ class LayerNorm(BasePraxisLayer):
     reductions_in_fp32: bool = False
 
     def __call__(self, inputs, paddings=None, scale=None, bias=None, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            paddings: The paddings parameter.
+            scale: The scale parameter.
+            bias: The bias parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         mean = np.mean(inputs, axis=-1, keepdims=True)
         var = np.mean(np.square(inputs - mean), axis=-1, keepdims=True)
         normed_inputs = (inputs - mean) / np.sqrt(var + self.epsilon)
@@ -2090,12 +3478,24 @@ class LayerNorm(BasePraxisLayer):
 
 
 class Sequential(BasePraxisLayer):
-    """Sequential class."""
+    """Represents the Sequential configuration and behavior.
+
+    This class encapsulates the functionality for Sequential.
+    """
 
     layers: Optional[list] = None
 
     def __call__(self, inputs, *args, **kwargs):
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            The result of the operation.
+        """
         if not self.layers:
             return inputs
         out = inputs

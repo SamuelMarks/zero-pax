@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the conftest module."""
 
 import pytest
 import sys
@@ -15,7 +15,10 @@ import ml_switcheroo
 
 @pytest.fixture(autouse=True)
 def switcheroo_config():
-    # Unified pytest configuration that imports switcheroo config contexts
-    """switcheroo_config docstring."""
+    """Provides the switcheroo_config fixture.
+
+    Returns:
+        The result of the test.
+    """
     with ml_switcheroo.EagerMode():
         yield

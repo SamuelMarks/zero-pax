@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_embeddings_port module."""
 
 import numpy as np
 import pytest
@@ -16,7 +16,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_embedding():
-    """test_embedding docstring."""
+    """Executes the test_embedding test.
+
+    Returns:
+        The result of the test.
+    """
     layer = Embedding(num_classes=10, input_dims=4)
     w = np.random.normal(size=(10, 4)).astype(np.float32)
     ids = np.array([[1, 5], [9, 0]])
@@ -41,7 +45,11 @@ def test_embedding():
 
 
 def test_shared_embedding_softmax():
-    """test_shared_embedding_softmax docstring."""
+    """Executes the test_shared_embedding_softmax test.
+
+    Returns:
+        The result of the test.
+    """
     layer = SharedEmbeddingSoftmax(num_classes=10, input_dims=4, scale_sqrt_depth=True)
     w = np.random.normal(size=(10, 4)).astype(np.float32)
 
@@ -59,7 +67,11 @@ def test_shared_embedding_softmax():
 
 
 def test_gshard_embedding_softmax():
-    """test_gshard_embedding_softmax docstring."""
+    """Executes the test_gshard_embedding_softmax test.
+
+    Returns:
+        The result of the test.
+    """
     layer = GShardSharedEmbeddingSoftmax(
         num_classes=10, input_dims=4, soft_cap_logits=2.0, logits_abs_max=1.0
     )
@@ -79,7 +91,11 @@ def test_gshard_embedding_softmax():
 
 
 def test_positional_embedding():
-    """test_positional_embedding docstring."""
+    """Executes the test_positional_embedding test.
+
+    Returns:
+        The result of the test.
+    """
     layer = PositionalEmbedding(embedding_dims=5)  # odd dim
     out = layer(seq_length=4)
     assert out.shape == (1, 4, 5)
@@ -90,7 +106,11 @@ def test_positional_embedding():
 
 
 def test_positional_embedding_2d():
-    """test_positional_embedding_2d docstring."""
+    """Executes the test_positional_embedding_2d test.
+
+    Returns:
+        The result of the test.
+    """
     layer = PositionalEmbedding2D(
         h=2, w=3, embedding_dims=5, num_prepend_cls_tokens=1, num_append_cls_tokens=2
     )
@@ -100,7 +120,11 @@ def test_positional_embedding_2d():
 
 
 def test_trainable_positional_embedding():
-    """test_trainable_positional_embedding docstring."""
+    """Executes the test_trainable_positional_embedding test.
+
+    Returns:
+        The result of the test.
+    """
     layer = TrainablePositionalEmbedding(max_seq_length=10, embedding_dims=4)
     w = np.random.normal(size=(10, 4)).astype(np.float32)
     out = layer(seq_length=4, w=w)
@@ -114,7 +138,11 @@ def test_trainable_positional_embedding():
 
 
 def test_quantization_coverage():
-    """test_quantization_coverage docstring."""
+    """Executes the test_quantization_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     vq = VectorQuantization()
     vqz = VectorQuantizer()
@@ -126,6 +154,10 @@ def test_quantization_coverage():
 
 
 def test_gshard_warning_fix():
-    """test_gshard_warning_fix docstring."""
+    """Executes the test_gshard_warning_fix test.
+
+    Returns:
+        The result of the test.
+    """
     layer = GShardSharedEmbeddingSoftmax(input_dims=1, num_classes=2)
     layer(np.array([[1.0]]))

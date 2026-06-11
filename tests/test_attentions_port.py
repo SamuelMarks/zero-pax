@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_attentions_port module."""
 
 import numpy as np
 import pytest
@@ -18,7 +18,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_attention_projection():
-    """test_attention_projection docstring."""
+    """Executes the test_attention_projection test.
+
+    Returns:
+        The result of the test.
+    """
     inputs_in = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     proj_in = AttentionProjection(
         input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=False
@@ -57,7 +61,11 @@ def test_attention_projection():
 
 
 def test_dot_product_attention():
-    """test_dot_product_attention docstring."""
+    """Executes the test_dot_product_attention test.
+
+    Returns:
+        The result of the test.
+    """
     query = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     key = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     value = np.random.normal(size=(2, 4, 8)).astype(np.float32)
@@ -74,7 +82,11 @@ def test_dot_product_attention():
 
 
 def test_grouped_query_attention():
-    """test_grouped_query_attention docstring."""
+    """Executes the test_grouped_query_attention test.
+
+    Returns:
+        The result of the test.
+    """
     query = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     key = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     value = np.random.normal(size=(2, 4, 8)).astype(np.float32)
@@ -90,7 +102,11 @@ def test_grouped_query_attention():
 
 
 def test_wrappers_coverage():
-    """test_wrappers_coverage docstring."""
+    """Executes the test_wrappers_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     query = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     key = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     value = np.random.normal(size=(2, 4, 8)).astype(np.float32)
@@ -111,7 +127,11 @@ def test_wrappers_coverage():
 
 
 def test_self_attention_norm_residual():
-    """test_self_attention_norm_residual docstring."""
+    """Executes the test_self_attention_norm_residual test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
     layer.force_no_residual = True
@@ -126,21 +146,40 @@ def test_self_attention_norm_residual():
 
 
 def test_self_attention_norm_residual_miss():
-    """test_self_attention_norm_residual_miss docstring."""
+    """Executes the test_self_attention_norm_residual_miss test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
     layer.force_no_residual = True
 
     # mock the projection output to have a different shape
     class BadProj:
-        """BadProj docstring."""
+        """Executes the BadProj operation."""
 
         def __init__(self, *args, **kwargs):
-            """__init__ docstring."""
+            """Executes the __init__ test.
+
+            Args:
+                self: The self parameter.
+
+            Returns:
+                The result of the test.
+            """
             pass
 
         def __call__(self, x):
-            """__call__ docstring."""
+            """Executes the __call__ test.
+
+            Args:
+                self: The self parameter.
+                x: The x parameter.
+
+            Returns:
+                The result of the test.
+            """
             return np.zeros((2, 4, 9))
 
     import zero_pax.praxis.layers as zpl
@@ -156,7 +195,11 @@ def test_self_attention_norm_residual_miss():
 
 
 def test_self_attention_norm_residual_force_no_residual():
-    """test_self_attention_norm_residual_force_no_residual docstring."""
+    """Executes the test_self_attention_norm_residual_force_no_residual test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
     layer.force_no_residual = True
@@ -165,20 +208,39 @@ def test_self_attention_norm_residual_force_no_residual():
 
 
 def test_self_attention_norm_residual_shape_mismatch():
-    """test_self_attention_norm_residual_shape_mismatch docstring."""
+    """Executes the test_self_attention_norm_residual_shape_mismatch test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
 
     # mock projection to return totally different shape
     class BadProj:
-        """BadProj docstring."""
+        """Executes the BadProj operation."""
 
         def __init__(self, *args, **kwargs):
-            """__init__ docstring."""
+            """Executes the __init__ test.
+
+            Args:
+                self: The self parameter.
+
+            Returns:
+                The result of the test.
+            """
             pass
 
         def __call__(self, x):
-            """__call__ docstring."""
+            """Executes the __call__ test.
+
+            Args:
+                self: The self parameter.
+                x: The x parameter.
+
+            Returns:
+                The result of the test.
+            """
             return np.zeros((2, 4, 9))
 
     import zero_pax.praxis.layers as zpl

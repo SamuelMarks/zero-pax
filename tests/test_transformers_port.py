@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_transformers_port module."""
 
 import numpy as np
 import pytest
@@ -23,7 +23,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_transformer_feedforward():
-    """test_transformer_feedforward docstring."""
+    """Executes the test_transformer_feedforward test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = TransformerFeedForward(input_dims=8, hidden_dims=16)
 
@@ -40,7 +44,11 @@ def test_transformer_feedforward():
 
 
 def test_ff_wrappers_coverage():
-    """test_ff_wrappers_coverage docstring."""
+    """Executes the test_ff_wrappers_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
 
     for cls in [AdaptedTransformerFeedForward, TransformerFeedForwardMoe]:
@@ -50,7 +58,11 @@ def test_ff_wrappers_coverage():
 
 
 def test_transformer_block():
-    """test_transformer_block docstring."""
+    """Executes the test_transformer_block test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = Transformer()
     out = layer(inputs)
@@ -58,7 +70,11 @@ def test_transformer_block():
 
 
 def test_stacked_transformer():
-    """test_stacked_transformer docstring."""
+    """Executes the test_stacked_transformer test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = StackedTransformer(num_layers=2)
     out = layer(inputs)
@@ -74,7 +90,11 @@ def test_stacked_transformer():
 
 
 def test_transformer_model_wrappers():
-    """test_transformer_model_wrappers docstring."""
+    """Executes the test_transformer_model_wrappers test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
 
     for cls in [

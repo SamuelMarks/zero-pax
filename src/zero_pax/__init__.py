@@ -1,79 +1,73 @@
-"""Module documentation."""
+"""Core functionality for the __init__ module."""
 
 import ml_switcheroo
 
-"""zero_pax API."""
+"""Public API definitions for zero_pax."""
 
 
 class BaseParameter:
-    """BaseParameter class."""
+    """Represents the BaseParameter configuration and behavior.
 
-    """BaseParameter class."""
-
-    """BaseParameter class."""
-
-    """BaseParameter class."""
-
-    """BaseParameter class."""
-
-    """BaseParameter class."""
+    This class encapsulates the functionality for BaseParameter.
+    """
 
     def __init__(self, value):
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
+        """Initializes the object.
+
+        Args:
+            value: The value parameter.
+
+        Returns:
+            The result of the operation.
+        """
         self.value = value
 
     def __call__(self):
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Returns:
+            The result of the operation.
+        """
         return self.value
 
 
 class Layer:
-    """Layer class."""
+    """Represents the Layer configuration and behavior.
 
-    """Layer class."""
-
-    """Layer class."""
-
-    """Layer class."""
-
-    """Layer class."""
-
-    """Layer class."""
+    This class encapsulates the functionality for Layer.
+    """
 
     def __init__(self, name=None):
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
-        """__init__ function."""
+        """Initializes the object.
+
+        Args:
+            name: The name parameter.
+
+        Returns:
+            The result of the operation.
+        """
         self.name = name
         self.params = {}
 
     def register_parameter(self, name, value):
-        """register_parameter function."""
-        """register_parameter function."""
-        """register_parameter function."""
-        """register_parameter function."""
-        """register_parameter function."""
-        """register_parameter function."""
+        """register_parameter function.
+
+        Args:
+            name: The name parameter.
+            value: The value parameter.
+
+        Returns:
+            The result of the operation.
+        """
         self.params[name] = BaseParameter(value)
 
     def __call__(self, inputs):
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
-        """__call__ function."""
+        """Calls the object as a function.
+
+        Args:
+            inputs: The inputs parameter.
+
+        Returns:
+            The result of the operation.
+        """
         return inputs

@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_linear_pooling_port module."""
 
 import numpy as np
 import pytest
@@ -8,7 +8,11 @@ from zero_pax.praxis.layers import Linear, Pooling, Pooling1D, GlobalPooling
 
 
 def test_linear_equivalence():
-    """test_linear_equivalence docstring."""
+    """Executes the test_linear_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     w = np.random.normal(size=(8, 16)).astype(np.float32)
 
@@ -27,7 +31,11 @@ def test_linear_equivalence():
 
 
 def test_pooling_equivalence():
-    """test_pooling_equivalence docstring."""
+    """Executes the test_pooling_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
 
     # zero pax SAME max
@@ -46,7 +54,11 @@ def test_pooling_equivalence():
 
 
 def test_pooling_raises():
-    """test_pooling_raises docstring."""
+    """Executes the test_pooling_raises test.
+
+    Returns:
+        The result of the test.
+    """
     with pytest.raises(ValueError, match="sequences of length 2"):
         Pooling(window_shape=(2,))(np.zeros((1, 2, 2, 1)))
 
@@ -65,7 +77,11 @@ def test_pooling_raises():
 
 
 def test_pooling1d_equivalence():
-    """test_pooling1d_equivalence docstring."""
+    """Executes the test_pooling1d_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 8)).astype(np.float32)
 
     # stride 1 window 1 (identity)
@@ -90,7 +106,11 @@ def test_pooling1d_equivalence():
 
 
 def test_pooling1d_raises():
-    """test_pooling1d_raises docstring."""
+    """Executes the test_pooling1d_raises test.
+
+    Returns:
+        The result of the test.
+    """
     with pytest.raises(ValueError, match="positive integer"):
         Pooling1D(stride=0)(np.zeros((1, 2, 1)))
     with pytest.raises(ValueError, match="one of AVG or MAX"):
@@ -98,7 +118,11 @@ def test_pooling1d_raises():
 
 
 def test_global_pooling_equivalence():
-    """test_global_pooling_equivalence docstring."""
+    """Executes the test_global_pooling_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 8)).astype(np.float32)
 
     # AVG over dim 1
@@ -133,7 +157,11 @@ def test_global_pooling_equivalence():
 
 
 def test_global_pooling_raises():
-    """test_global_pooling_raises docstring."""
+    """Executes the test_global_pooling_raises test.
+
+    Returns:
+        The result of the test.
+    """
     with pytest.raises(ValueError, match="one of AVG or MAX"):
         GlobalPooling(pooling_type="MIN")(np.zeros((1, 2, 1)))
     with pytest.raises(ValueError, match="must be set as a list"):

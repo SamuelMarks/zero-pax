@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_convolutions_port module."""
 
 import numpy as np
 import pytest
@@ -15,7 +15,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_conv2d_equivalence():
-    """test_conv2d_equivalence docstring."""
+    """Executes the test_conv2d_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
     bias = np.random.normal(size=(4,)).astype(np.float32)
@@ -42,7 +46,11 @@ def test_conv2d_equivalence():
 
 
 def test_convbnact_equivalence():
-    """test_convbnact_equivalence docstring."""
+    """Executes the test_convbnact_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
     layer_zero = ConvBNAct(filter_shape=(3, 3, 3, 4), padding="SAME")
@@ -52,7 +60,11 @@ def test_convbnact_equivalence():
 
 
 def test_convbnactwithpadding_equivalence():
-    """test_convbnactwithpadding_equivalence docstring."""
+    """Executes the test_convbnactwithpadding_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
     paddings = np.zeros((2, 8)).astype(np.float32)
@@ -69,7 +81,11 @@ def test_convbnactwithpadding_equivalence():
 
 
 def test_depthwiseconv1d_equivalence():
-    """test_depthwiseconv1d_equivalence docstring."""
+    """Executes the test_depthwiseconv1d_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
     w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
 
@@ -83,7 +99,11 @@ def test_depthwiseconv1d_equivalence():
 
 
 def test_causaldepthwiseconv1d_equivalence():
-    """test_causaldepthwiseconv1d_equivalence docstring."""
+    """Executes the test_causaldepthwiseconv1d_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
     w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
 
@@ -97,7 +117,11 @@ def test_causaldepthwiseconv1d_equivalence():
 
 
 def test_lightconv1d_equivalence():
-    """test_lightconv1d_equivalence docstring."""
+    """Executes the test_lightconv1d_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
     layer_zero = LightConv1D(kernel_size=3)
     out_zero = layer_zero(inputs)
@@ -105,7 +129,11 @@ def test_lightconv1d_equivalence():
 
 
 def test_conv2d_no_bias():
-    """test_conv2d_no_bias docstring."""
+    """Executes the test_conv2d_no_bias test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     layer_zero = Conv2D(filter_shape=(3, 3, 3, 4), bias=False)
     out = layer_zero(inputs)
@@ -113,7 +141,11 @@ def test_conv2d_no_bias():
 
 
 def test_convbnact_with_bn():
-    """test_convbnact_with_bn docstring."""
+    """Executes the test_convbnact_with_bn test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     layer_zero = ConvBNAct(filter_shape=(3, 3, 3, 4))
     bn_gamma = np.random.normal(size=(4,)).astype(np.float32)
@@ -123,7 +155,11 @@ def test_convbnact_with_bn():
 
 
 def test_convbnactwithpadding_with_bn():
-    """test_convbnactwithpadding_with_bn docstring."""
+    """Executes the test_convbnactwithpadding_with_bn test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     paddings = np.zeros((2, 8)).astype(np.float32)
     layer_zero = ConvBNActWithPadding(filter_shape=(3, 3, 3, 4))
@@ -134,7 +170,11 @@ def test_convbnactwithpadding_with_bn():
 
 
 def test_depthwiseconv1d_coverage():
-    """test_depthwiseconv1d_coverage docstring."""
+    """Executes the test_depthwiseconv1d_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
     w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
     layer_zero = DepthwiseConv1D(filter_shape=(3, 4, 8), filter_stride=(0,))
@@ -143,7 +183,11 @@ def test_depthwiseconv1d_coverage():
 
 
 def test_causaldepthwiseconv1d_coverage():
-    """test_causaldepthwiseconv1d_coverage docstring."""
+    """Executes the test_causaldepthwiseconv1d_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
     w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
     layer_zero = CausalDepthwiseConv1D(filter_shape=(3, 4, 8), filter_stride=(0,))
@@ -152,7 +196,11 @@ def test_causaldepthwiseconv1d_coverage():
 
 
 def test_lightconv1d_w_coverage():
-    """test_lightconv1d_w_coverage docstring."""
+    """Executes the test_lightconv1d_w_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
     w = np.random.normal(size=(3, 4, 4)).astype(np.float32)
     layer_zero = LightConv1D(kernel_size=3)
@@ -161,7 +209,11 @@ def test_lightconv1d_w_coverage():
 
 
 def test_conv2d_bias_none_coverage():
-    """test_conv2d_bias_none_coverage docstring."""
+    """Executes the test_conv2d_bias_none_coverage test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     layer_zero = Conv2D(filter_shape=(3, 3, 3, 4), bias=True)
     out = layer_zero(inputs, bias=None)

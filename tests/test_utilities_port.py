@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_utilities_port module."""
 
 import numpy as np
 import pytest
@@ -29,14 +29,22 @@ from zero_pax.praxis.layers import (
 
 
 def test_identity():
-    """test_identity docstring."""
+    """Executes the test_identity test.
+
+    Returns:
+        The result of the test.
+    """
     layer = Identity()
     inputs = np.array([1, 2, 3])
     np.testing.assert_allclose(layer(inputs), inputs)
 
 
 def test_bias():
-    """test_bias docstring."""
+    """Executes the test_bias test.
+
+    Returns:
+        The result of the test.
+    """
     layer = Bias(dims=3)
     inputs = np.array([[1, 2, 3]])
     b = np.array([1, 1, 1])
@@ -48,7 +56,11 @@ def test_bias():
 
 
 def test_dropout():
-    """test_dropout docstring."""
+    """Executes the test_dropout test.
+
+    Returns:
+        The result of the test.
+    """
     layer = Dropout(keep_prob=0.5)
     inputs = np.ones((2, 2))
     out = layer(inputs)
@@ -60,7 +72,11 @@ def test_dropout():
 
 
 def test_einsum():
-    """test_einsum docstring."""
+    """Executes the test_einsum test.
+
+    Returns:
+        The result of the test.
+    """
     layer = Einsum(equation="ij,jk->ik")
     a = np.ones((2, 3))
     b = np.ones((3, 4))
@@ -82,7 +98,11 @@ def test_einsum():
 
 
 def test_fullsoftmax():
-    """test_fullsoftmax docstring."""
+    """Executes the test_fullsoftmax test.
+
+    Returns:
+        The result of the test.
+    """
     layer = FullSoftmax()
     logits = np.array([[0.0, 1.0, 0.0]])
     out = layer(logits)
@@ -90,7 +110,11 @@ def test_fullsoftmax():
 
 
 def test_sigmoid_cross_entropy():
-    """test_sigmoid_cross_entropy docstring."""
+    """Executes the test_sigmoid_cross_entropy test.
+
+    Returns:
+        The result of the test.
+    """
     layer = SigmoidCrossEntropy()
     logits = np.array([[-1.0, 2.0]])
     labels = np.array([[0.0, 1.0]])
@@ -99,7 +123,11 @@ def test_sigmoid_cross_entropy():
 
 
 def test_bitempered_loss():
-    """test_bitempered_loss docstring."""
+    """Executes the test_bitempered_loss test.
+
+    Returns:
+        The result of the test.
+    """
     layer = BiTemperedLoss()
     logits = np.array([[-1.0, 2.0]])
     labels = np.array([[0.0, 1.0]])
@@ -108,13 +136,25 @@ def test_bitempered_loss():
 
 
 def test_sequential():
-    """test_sequential docstring."""
+    """Executes the test_sequential test.
+
+    Returns:
+        The result of the test.
+    """
 
     class DummyAdd(object):
-        """DummyAdd docstring."""
+        """Executes the DummyAdd operation."""
 
         def __call__(self, x):
-            """__call__ docstring."""
+            """Executes the __call__ test.
+
+            Args:
+                self: The self parameter.
+                x: The x parameter.
+
+            Returns:
+                The result of the test.
+            """
             return x + 1
 
     layer = Sequential(layers=[DummyAdd(), DummyAdd()])
@@ -127,13 +167,25 @@ def test_sequential():
 
 
 def test_repeat():
-    """test_repeat docstring."""
+    """Executes the test_repeat test.
+
+    Returns:
+        The result of the test.
+    """
 
     class DummyAdd(object):
-        """DummyAdd docstring."""
+        """Executes the DummyAdd operation."""
 
         def __call__(self, x):
-            """__call__ docstring."""
+            """Executes the __call__ test.
+
+            Args:
+                self: The self parameter.
+                x: The x parameter.
+
+            Returns:
+                The result of the test.
+            """
             return x + 1
 
     layer = Repeat(sub_layer=DummyAdd(), num_repeats=3)
@@ -146,7 +198,11 @@ def test_repeat():
 
 
 def test_perdimscale():
-    """test_perdimscale docstring."""
+    """Executes the test_perdimscale test.
+
+    Returns:
+        The result of the test.
+    """
     layer = PerDimScale(dims=3)
     inputs = np.ones((2, 3))
     scale = np.array([1, 2, 3])
@@ -158,7 +214,11 @@ def test_perdimscale():
 
 
 def test_stackingovertime():
-    """test_stackingovertime docstring."""
+    """Executes the test_stackingovertime test.
+
+    Returns:
+        The result of the test.
+    """
     layer = StackingOverTime(left_context=1, right_context=1, stride=2)
     inputs = np.ones((2, 5, 3))  # B, T, C
     out = layer(inputs)
@@ -166,7 +226,11 @@ def test_stackingovertime():
 
 
 def test_stochasticresidual():
-    """test_stochasticresidual docstring."""
+    """Executes the test_stochasticresidual test.
+
+    Returns:
+        The result of the test.
+    """
     layer = StochasticResidual(residual_weight=0.5)
     inputs = np.ones((2, 2))
     residual = np.ones((2, 2)) * 2
@@ -175,7 +239,11 @@ def test_stochasticresidual():
 
 
 def test_temporalshifting():
-    """test_temporalshifting docstring."""
+    """Executes the test_temporalshifting test.
+
+    Returns:
+        The result of the test.
+    """
     layer = TemporalShifting(shift=1)
     inputs = np.ones((2, 5, 3))
     out = layer(inputs)
@@ -191,7 +259,11 @@ def test_temporalshifting():
 
 
 def test_routing_mocks():
-    """test_routing_mocks docstring."""
+    """Executes the test_routing_mocks test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.ones((2, 2))
     for cls in [
         MultitaskResidualAdapter,

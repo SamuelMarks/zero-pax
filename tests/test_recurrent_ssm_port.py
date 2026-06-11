@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_recurrent_ssm_port module."""
 
 import numpy as np
 import pytest
@@ -15,7 +15,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_lstmcellsimple():
-    """test_lstmcellsimple docstring."""
+    """Executes the test_lstmcellsimple test.
+
+    Returns:
+        The result of the test.
+    """
     layer = LstmCellSimple(hidden_size=4)
     m = np.random.normal(size=(2, 4)).astype(np.float32)
     c = np.random.normal(size=(2, 4)).astype(np.float32)
@@ -43,7 +47,11 @@ def test_lstmcellsimple():
 
 
 def test_cifglstmcellsimple():
-    """test_cifglstmcellsimple docstring."""
+    """Executes the test_cifglstmcellsimple test.
+
+    Returns:
+        The result of the test.
+    """
     layer = CifgLstmCellSimple(hidden_size=4)
     m = np.random.normal(size=(2, 4)).astype(np.float32)
     c = np.random.normal(size=(2, 4)).astype(np.float32)
@@ -63,7 +71,11 @@ def test_cifglstmcellsimple():
 
 
 def test_layernormalizedlstmcellsimple():
-    """test_layernormalizedlstmcellsimple docstring."""
+    """Executes the test_layernormalizedlstmcellsimple test.
+
+    Returns:
+        The result of the test.
+    """
     layer = LayerNormalizedLstmCellSimple(hidden_size=4)
     m = np.random.normal(size=(2, 4)).astype(np.float32)
     c = np.random.normal(size=(2, 4)).astype(np.float32)
@@ -82,7 +94,11 @@ def test_layernormalizedlstmcellsimple():
 
 
 def test_frnn():
-    """test_frnn docstring."""
+    """Executes the test_frnn test.
+
+    Returns:
+        The result of the test.
+    """
     layer = FRnn(hidden_size=4)
     inputs = np.random.normal(size=(2, 5, 8)).astype(np.float32)
     out = layer(inputs)
@@ -94,7 +110,11 @@ def test_frnn():
 
 
 def test_lstmfrnn():
-    """test_lstmfrnn docstring."""
+    """Executes the test_lstmfrnn test.
+
+    Returns:
+        The result of the test.
+    """
     layer = LstmFrnn(hidden_size=4)
     inputs = np.random.normal(size=(2, 5, 8)).astype(np.float32)
     out = layer(inputs)
@@ -108,7 +128,11 @@ def test_lstmfrnn():
 
 
 def test_stackfrnn():
-    """test_stackfrnn docstring."""
+    """Executes the test_stackfrnn test.
+
+    Returns:
+        The result of the test.
+    """
     layer = StackFrnn(hidden_size=4, num_layers=2)
     inputs = np.random.normal(size=(2, 5, 8)).astype(np.float32)
     out = layer(inputs)
@@ -116,7 +140,11 @@ def test_stackfrnn():
 
 
 def test_ssm():
-    """test_ssm docstring."""
+    """Executes the test_ssm test.
+
+    Returns:
+        The result of the test.
+    """
     layer = SSM(hidden_size=4)
     inputs = np.random.normal(size=(2, 5, 8)).astype(np.float32)
     out = layer(inputs)
@@ -124,7 +152,11 @@ def test_ssm():
 
 
 def test_ssmgated():
-    """test_ssmgated docstring."""
+    """Executes the test_ssmgated test.
+
+    Returns:
+        The result of the test.
+    """
     layer = SSMGated(hidden_size=4)
     inputs = np.random.normal(size=(2, 5, 8)).astype(np.float32)
     out = layer(inputs)

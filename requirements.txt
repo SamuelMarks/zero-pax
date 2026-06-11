@@ -1,3 +1,3 @@
-numpy
-zero-keras
+pydantic
+zero-jax
 ml-switcheroo-compiler

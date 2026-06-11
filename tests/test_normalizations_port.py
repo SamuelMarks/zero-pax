@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_normalizations_port module."""
 
 import numpy as np
 import pytest
@@ -16,7 +16,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_identity_norm_equivalence():
-    """test_identity_norm_equivalence docstring."""
+    """Executes the test_identity_norm_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     layer_zero = IdentityNorm()
     out_zero = layer_zero(inputs)
@@ -24,7 +28,11 @@ def test_identity_norm_equivalence():
 
 
 def test_layer_norm_equivalence():
-    """test_layer_norm_equivalence docstring."""
+    """Executes the test_layer_norm_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     scale = np.random.normal(size=(8,)).astype(np.float32)
     bias = np.random.normal(size=(8,)).astype(np.float32)
@@ -42,7 +50,11 @@ def test_layer_norm_equivalence():
 
 
 def test_rms_norm_equivalence():
-    """test_rms_norm_equivalence docstring."""
+    """Executes the test_rms_norm_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     scale = np.random.normal(size=(8,)).astype(np.float32)
 
@@ -58,7 +70,11 @@ def test_rms_norm_equivalence():
 
 
 def test_rms_norm_noscale_equivalence():
-    """test_rms_norm_noscale_equivalence docstring."""
+    """Executes the test_rms_norm_noscale_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
 
     var = jnp.mean(jnp.square(inputs), axis=-1, keepdims=True)
@@ -71,7 +87,11 @@ def test_rms_norm_noscale_equivalence():
 
 
 def test_batch_norm_equivalence():
-    """test_batch_norm_equivalence docstring."""
+    """Executes the test_batch_norm_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     beta = np.random.normal(size=(8,)).astype(np.float32)
     gamma = np.random.normal(size=(8,)).astype(np.float32)
@@ -110,7 +130,11 @@ def test_batch_norm_equivalence():
 
 
 def test_group_norm_equivalence():
-    """test_group_norm_equivalence docstring."""
+    """Executes the test_group_norm_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     beta = np.random.normal(size=(8,)).astype(np.float32)
     gamma = np.random.normal(size=(8,)).astype(np.float32)
@@ -153,15 +177,22 @@ def test_group_norm_equivalence():
 
 
 def test_base_normalization_raises():
-    """test_base_normalization_raises docstring."""
+    """Executes the test_base_normalization_raises test.
+
+    Returns:
+        The result of the test.
+    """
     layer = BaseNormalization()
     with pytest.raises(NotImplementedError):
         layer(np.array([1.0]))
 
 
 def test_group_norm_uncovered_branches():
-    # input_rank unset, gamma is None, beta is None
-    """test_group_norm_uncovered_branches docstring."""
+    """Executes the test_group_norm_uncovered_branches test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     layer = GroupNorm(dim=8, num_groups=2)
     layer.input_rank = None
@@ -178,7 +209,11 @@ def test_group_norm_uncovered_branches():
 
 
 def test_dummymeta_getitem():
-    """test_dummymeta_getitem docstring."""
+    """Executes the test_dummymeta_getitem test.
+
+    Returns:
+        The result of the test.
+    """
     from zero_pax.praxis.layers import DummyType
 
     # hit the __getitem__ on metaclass

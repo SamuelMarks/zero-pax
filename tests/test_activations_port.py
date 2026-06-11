@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_activations_port module."""
 
 import numpy as np
 import pytest
@@ -20,7 +20,11 @@ import jax.numpy as jnp
 
 
 def test_relu_equivalence():
-    """test_relu_equivalence docstring."""
+    """Executes the test_relu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.relu(inputs)
     zero_out = ReLU()(inputs)
@@ -28,7 +32,11 @@ def test_relu_equivalence():
 
 
 def test_leaky_relu_equivalence():
-    """test_leaky_relu_equivalence docstring."""
+    """Executes the test_leaky_relu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.leaky_relu(inputs, negative_slope=0.01)
     zero_out = LeakyReLU()(inputs)
@@ -36,7 +44,11 @@ def test_leaky_relu_equivalence():
 
 
 def test_gelu_equivalence():
-    """test_gelu_equivalence docstring."""
+    """Executes the test_gelu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.gelu(inputs, approximate=True)
     zero_out = GELU()(inputs)
@@ -44,7 +56,11 @@ def test_gelu_equivalence():
 
 
 def test_swish_equivalence():
-    """test_swish_equivalence docstring."""
+    """Executes the test_swish_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.swish(inputs)
     zero_out = Swish()(inputs)
@@ -52,7 +68,11 @@ def test_swish_equivalence():
 
 
 def test_silu_equivalence():
-    """test_silu_equivalence docstring."""
+    """Executes the test_silu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.silu(inputs)
     zero_out = SiLU()(inputs)
@@ -60,7 +80,11 @@ def test_silu_equivalence():
 
 
 def test_sigmoid_equivalence():
-    """test_sigmoid_equivalence docstring."""
+    """Executes the test_sigmoid_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.sigmoid(inputs)
     zero_out = Sigmoid()(inputs)
@@ -68,7 +92,11 @@ def test_sigmoid_equivalence():
 
 
 def test_tanh_equivalence():
-    """test_tanh_equivalence docstring."""
+    """Executes the test_tanh_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.tanh(inputs)
     zero_out = Tanh()(inputs)
@@ -76,7 +104,11 @@ def test_tanh_equivalence():
 
 
 def test_elu_equivalence():
-    """test_elu_equivalence docstring."""
+    """Executes the test_elu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.elu(inputs)
     zero_out = ELU()(inputs)
@@ -84,7 +116,11 @@ def test_elu_equivalence():
 
 
 def test_cubed_relu_equivalence():
-    """test_cubed_relu_equivalence docstring."""
+    """Executes the test_cubed_relu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.relu(inputs) ** 3
     zero_out = CubedReLU()(inputs)
@@ -92,7 +128,11 @@ def test_cubed_relu_equivalence():
 
 
 def test_squared_relu_equivalence():
-    """test_squared_relu_equivalence docstring."""
+    """Executes the test_squared_relu_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.relu(inputs) ** 2
     zero_out = SquaredReLU()(inputs)
@@ -100,7 +140,11 @@ def test_squared_relu_equivalence():
 
 
 def test_relu6_equivalence():
-    """test_relu6_equivalence docstring."""
+    """Executes the test_relu6_equivalence test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
     jax_out = jax.nn.relu6(inputs)
     zero_out = ReLU6()(inputs)

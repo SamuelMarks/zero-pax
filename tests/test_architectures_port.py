@@ -1,4 +1,4 @@
-"""Module docstring."""
+"""Tests for the test_architectures_port module."""
 
 import numpy as np
 import pytest
@@ -15,7 +15,11 @@ from zero_pax.praxis.layers import (
 
 
 def test_resnet():
-    """test_resnet docstring."""
+    """Executes the test_resnet test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     layer = ResNetBlock()
     out = layer(inputs)
@@ -27,7 +31,11 @@ def test_resnet():
 
 
 def test_vanilla():
-    """test_vanilla docstring."""
+    """Executes the test_vanilla test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     layer = VanillaBlock()
     out = layer(inputs)
@@ -39,7 +47,11 @@ def test_vanilla():
 
 
 def test_mlpblock():
-    """test_mlpblock docstring."""
+    """Executes the test_mlpblock test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 8)).astype(np.float32)
     layer = MLPBlock()
     out = layer(inputs)
@@ -47,7 +59,11 @@ def test_mlpblock():
 
 
 def test_conformer():
-    """test_conformer docstring."""
+    """Executes the test_conformer test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 10, 8)).astype(np.float32)
     layer = Conformer()
     out = layer(inputs)
@@ -55,7 +71,11 @@ def test_conformer():
 
 
 def test_vit_entry_exit():
-    """test_vit_entry_exit docstring."""
+    """Executes the test_vit_entry_exit test.
+
+    Returns:
+        The result of the test.
+    """
     inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
     entry = VitEntryLayers()
     out_entry = entry(inputs)
