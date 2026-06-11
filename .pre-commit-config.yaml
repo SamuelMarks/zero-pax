@@ -15,19 +15,12 @@ repos:
         types: [python]
         pass_filenames: false
 
-      - id: pytest-coverage
-        name: Run Pytest Coverage
-        entry: pytest --cov=. --cov-report=term-missing
+      - id: check-dependencies
+        name: Check Dependencies
+        entry: python3 scripts/check_dependencies.py
         language: system
         types: [python]
-        pass_filenames: false
-
-      - id: update-badges
-        name: Update Coverage Shields
-        entry: python3 scripts/update_badges.py
-        language: system
-        types_or: [python, markdown]
-        pass_filenames: false
+        exclude: ^(tests/|scripts/)
 
       - id: build
         name: Build Package

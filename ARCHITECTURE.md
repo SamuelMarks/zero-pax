@@ -1,4 +1,4 @@
-**Current Repository Context:** You are viewing the unified architecture documentation from within the `zero-pax` repository.
+**Current Repository Context:** You are viewing the unified architecture documentation from within the `zero-pax` repository, an API-compatible frontend for [google/pax](https://github.com/google/pax) and [google/praxis](https://github.com/google/praxis).
 
 # Abstract ML Machine Ecosystem Architecture
 
