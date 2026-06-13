@@ -19,8 +19,8 @@
 `zero-pax` provides a **zero-dependency, pure Python implementation of the [Pax/Praxis](https://github.com/google/pax) API surface**. It accurately mirrors the mathematical semantics of the 108 Praxis layers—ranging from standard Activations and Convolutions to complex Attention mechanisms and Transformer blocks. 
 
 Standard ML frameworks often bring heavy dependency chains, making them brittle and challenging to deploy in constrained or browser-based environments. `zero-pax` bypasses this by:
-1. Relying solely on the Python Standard Library and `numpy` for eager evaluations.
-2. Replacing complex configurations with strict `numpy` array validation and pure mathematical forward passes.
+1. Relying solely on the Python Standard Library and the `ml-switcheroo-compiler` backend for array evaluations.
+2. Replacing complex configurations with strict array validation and pure mathematical forward passes.
 3. Hooking seamlessly into the `ml-switcheroo-compiler` to trace operations via proxy tensors, enabling Reverse-mode automatic differentiation (AD), static shape inference, and deterministic Graph generation.
 
 This allows complex Pax/Praxis models to be statically compiled, optimized, and deployed as source-to-browser payloads (like WASM or WGSL shaders) without any third-party overhead.

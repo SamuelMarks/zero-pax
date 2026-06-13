@@ -36,3 +36,15 @@ def test_base_parameter_call():
 
     p = BaseParameter(42.0)
     assert p() == 42.0
+
+
+def test_exported_functions():
+    """Executes the test_exported_functions test.
+
+    Returns:
+        The result of the test.
+    """
+    import zero_pax
+
+    zero_pax.__call__()
+    zero_pax.init_weights()

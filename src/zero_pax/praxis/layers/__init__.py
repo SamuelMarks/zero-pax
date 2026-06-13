@@ -1,6 +1,6 @@
 """Core functionality for the __init__ module."""
 
-import ml_switcheroo
+import ml_switcheroo_compiler as ml_switcheroo
 from typing import Any, Sequence, Optional, Callable
 from pydantic import BaseModel, ConfigDict
 import zero_jax.numpy as np
@@ -1464,8 +1464,14 @@ class GroupedQueryAttention(BasePraxisLayer):
         # broadcast k and v from KV to N
         # N must be multiple of KV
         repeats = N // KV
-        k = np.repeat(k, repeats, axis=-2)
-        v = np.repeat(v, repeats, axis=-2)
+        k = np.reshape(
+            np.broadcast_to(np.expand_dims(k, -2), k.shape[:-2] + (KV, repeats, H)),
+            k.shape[:-2] + (N, H),
+        )
+        v = np.reshape(
+            np.broadcast_to(np.expand_dims(v, -2), v.shape[:-2] + (KV, repeats, H)),
+            v.shape[:-2] + (N, H),
+        )
 
         logits = np.einsum("...tnh,...snh->...nts", q, k) / np.sqrt(H)
 
@@ -3096,8 +3102,10 @@ class TrainablePositionalEmbedding(BasePraxisLayer):
             w = np.zeros((self.max_seq_length, self.embedding_dims))
 
         if position is None:
-            position = np.arange(seq_length)[None, :]
+            position = np.array([list(range(seq_length))])
 
+        # for float tensors from zero_jax we might need to cast via ML compiler ops.
+        # But `.astype` is supported.
         return w[position]
 
 
