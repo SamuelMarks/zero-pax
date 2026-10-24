@@ -3,24 +3,66 @@ repos:
     hooks:
       - id: ruff-format
         name: Ruff Format
-        entry: ruff format .
+        entry: ruff format --check src scripts tests
         language: system
         types: [python]
         pass_filenames: false
 
       - id: ruff-check
-        name: Ruff Check (Fix)
-        entry: ruff check --fix .
+        name: Ruff Check
+        entry: ruff check src scripts tests
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy
+        name: Mypy Strict Type Check
+        entry: mypy --strict src scripts tests
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: interrogate
+        name: Interrogate Docstring Coverage
+        entry: interrogate -v -f 100 src scripts tests
         language: system
         types: [python]
         pass_filenames: false
 
       - id: check-dependencies
-        name: Check Dependencies
+        name: Check Disallowed Dependencies
         entry: python3 scripts/check_dependencies.py
         language: system
         types: [python]
-        exclude: ^(tests/|scripts/)
+        pass_filenames: false
+
+      - id: lint-typing-and-hacks
+        name: Lint Typing and Reflection Hacks
+        entry: python3 scripts/lint_typing_and_hacks.py
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: check-docstrings
+        name: Check Argument and Function Docstrings
+        entry: python3 scripts/check_docstrings.py
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: check-compliance
+        name: Check Snapshot and Semantic Plan Compliance
+        entry: python3 scripts/check_compliance.py
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pytest
+        name: Pytest with 100% Line and Branch Coverage
+        entry: pytest --cov=src/zero_pax --cov-branch --cov-report=term-missing --cov-fail-under=100
+        language: system
+        types: [python]
+        pass_filenames: false
 
       - id: build
         name: Build Package

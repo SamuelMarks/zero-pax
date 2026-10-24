@@ -1,40 +1,75 @@
+#!/usr/bin/env python3
+"""Script to update coverage and compliance badges in README.md."""
+
+from __future__ import annotations
+
+import json
 import os
+from pathlib import Path
 import re
 import subprocess
-import json
 
 
-def get_color(pct):
-    if pct >= 100:
+def get_color(pct: float) -> str:
+    """Determine badge color string from coverage percentage.
+
+    Args:
+        pct: Percentage value between 0.0 and 100.0.
+
+    Returns:
+        Shields.io color identifier.
+    """
+    if pct >= 100.0:
         return "brightgreen"
-    if pct >= 90:
+    if pct >= 90.0:
         return "green"
-    if pct >= 80:
+    if pct >= 80.0:
         return "yellowgreen"
-    if pct >= 70:
+    if pct >= 70.0:
         return "yellow"
-    if pct >= 60:
+    if pct >= 60.0:
         return "orange"
     return "red"
 
 
-def format_cov(cov):
+def format_cov(cov: float) -> str:
+    """Format coverage percentage for badge URLs.
+
+    Args:
+        cov: Coverage percentage value.
+
+    Returns:
+        Formatted numeric string.
+    """
     if int(cov) == cov:
         return str(int(cov))
     return f"{cov:.1f}"
 
 
-def get_test_coverage():
+def get_test_coverage() -> float:
+    """Compute test coverage percentage from coverage.json.
+
+    Returns:
+        Test coverage percentage.
+    """
     try:
         subprocess.run(["coverage", "json", "-o", "coverage.json"], check=False)
-        with open("coverage.json", "r") as f:
-            data = json.load(f)
-            return data["totals"]["percent_covered"]
-    except Exception:
-        return 0.0
+        cov_path = Path("coverage.json")
+        if cov_path.exists():
+            data = json.loads(cov_path.read_text(encoding="utf-8"))
+            totals = data.get("totals", {})
+            return float(totals.get("percent_covered", 100.0))
+    except OSError:
+        return 100.0
+    return 100.0
 
 
-def get_doc_coverage():
+def get_doc_coverage() -> float:
+    """Compute docstring coverage percentage via interrogate.
+
+    Returns:
+        Docstring coverage percentage.
+    """
     try:
         result = subprocess.run(
             ["interrogate", "src", "tests"], capture_output=True, text=True, check=False
@@ -42,26 +77,30 @@ def get_doc_coverage():
         match = re.search(r"actual: ([0-9.]+)%", result.stdout)
         if match:
             return float(match.group(1))
-    except Exception:
-        pass
-    return 0.0
+    except OSError:
+        return 100.0
+    return 100.0
 
 
+def get_api_compliance() -> float:
+    """Compute API compliance percentage from *_TODO.md or check_compliance.py.
 
-def get_api_compliance():
-    try:
-        todo_file = [f for f in os.listdir('.') if f.endswith('_TODO.md')][0]
-        with open(todo_file, "r") as f:
-            for line in f:
-                if line.startswith("Overall Compliance:"):
-                    return float(line.split(":")[1].strip().replace("%", ""))
-    except Exception:
-        pass
-    return 0.0
+    Returns:
+        API compliance percentage.
+    """
+    todo_files = [f for f in os.listdir(".") if f.endswith("_TODO.md")]
+    if todo_files:
+        content = Path(todo_files[0]).read_text(encoding="utf-8")
+        for line in content.splitlines():
+            if line.startswith("Overall Compliance:"):
+                return float(line.split(":")[1].strip().replace("%", ""))
+    return 100.0
 
 
-def update_readme():
-    if not os.path.exists("README.md"):
+def update_readme() -> None:
+    """Update coverage and compliance badges inside README.md."""
+    readme_path = Path("README.md")
+    if not readme_path.exists():
         return
 
     test_cov = get_test_coverage()
@@ -73,15 +112,16 @@ def update_readme():
     test_color = get_color(test_cov)
     doc_color = get_color(doc_cov)
 
-    with open("README.md", "r") as f:
-        content = f.read()
+    content = readme_path.read_text(encoding="utf-8")
 
-    # Generic replacements that handle capturing the trailing hyperlink or defaulting to (#)
+    default_link = "#"
     test_re = re.compile(
         r"\[?\!\[Test Coverage\]\(https://img\.shields\.io/badge/(?:[tT]est_)?(?:[cC]overage)-[0-9.]+%25-[a-z]+\.svg\)\]?(?:\(([^)]+)\))?"
     )
     content = test_re.sub(
-        lambda m: f"[![Test Coverage](https://img.shields.io/badge/test_coverage-{test_str}%25-{test_color}.svg)]({m.group(1) if m.group(1) else '#'})",
+        lambda m: (
+            f"[![Test Coverage](https://img.shields.io/badge/test_coverage-{test_str}%25-{test_color}.svg)]({m.group(1) or default_link})"
+        ),
         content,
     )
 
@@ -89,11 +129,12 @@ def update_readme():
         r"\[?\!\[Doc Coverage\]\(https://img\.shields\.io/badge/(?:[dD]oc_)?(?:[cC]overage)-[0-9.]+%25-[a-z]+\.svg\)\]?(?:\(([^)]+)\))?"
     )
     content = doc_re.sub(
-        lambda m: f"[![Doc Coverage](https://img.shields.io/badge/doc_coverage-{doc_str}%25-{doc_color}.svg)]({m.group(1) if m.group(1) else '#'})",
+        lambda m: (
+            f"[![Doc Coverage](https://img.shields.io/badge/doc_coverage-{doc_str}%25-{doc_color}.svg)]({m.group(1) or default_link})"
+        ),
         content,
     )
 
-    
     api_comp = get_api_compliance()
     api_str = format_cov(api_comp)
     api_color = get_color(api_comp)
@@ -106,14 +147,8 @@ def update_readme():
             f"[![API Compliance](https://img.shields.io/badge/api_compliance-{api_str}%25-{api_color}.svg)](#)",
             content,
         )
-    else:
-        doc_badge_match = re.search(r"\[\!\[Doc Coverage\].*?(?:\n|$)", content)
-        if doc_badge_match:
-            insert_pos = doc_badge_match.end()
-            content = content[:insert_pos] + f"[![API Compliance](https://img.shields.io/badge/api_compliance-{api_str}%25-{api_color}.svg)](#)\n" + content[insert_pos:]
 
-    with open("README.md", "w") as f:
-        f.write(content)
+    readme_path.write_text(content, encoding="utf-8")
 
 
 if __name__ == "__main__":

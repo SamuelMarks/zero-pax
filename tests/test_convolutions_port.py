@@ -1,220 +1,152 @@
-"""Tests for the test_convolutions_port module."""
+"""Tests for convolution layers in zero_pax.praxis.layers.convolutions."""
 
-import numpy as np
-import pytest
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
+import numpy as np
+
 from zero_pax.praxis.layers import (
+    GELU,
+    BatchNorm,
+    CausalDepthwiseConv1D,
     Conv2D,
     ConvBNAct,
     ConvBNActWithPadding,
     DepthwiseConv1D,
-    CausalDepthwiseConv1D,
+    Identity,
     LightConv1D,
 )
 
 
-def test_conv2d_equivalence():
-    """Executes the test_conv2d_equivalence test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
+def test_conv2d_numerical() -> None:
+    """Verify `Conv2D` matches `jax.lax.conv_general_dilated` for SAME, VALID, causal, and padded inputs."""
+    inputs = np.random.normal(size=(2, 6, 6, 3)).astype(np.float32)
     w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
-    bias = np.random.normal(size=(4,)).astype(np.float32)
+    b = np.random.normal(size=(4,)).astype(np.float32)
 
-    # zero pax SAME
-    layer_zero = Conv2D(filter_shape=(3, 3, 3, 4), bias=True, padding="SAME")
-    out_zero = layer_zero(inputs, w=w, bias=bias)
-    assert out_zero.shape == (2, 8, 8, 4)
-
-    # VALID padding & dilation
-    layer_zero_valid = Conv2D(
-        filter_shape=(3, 3, 3, 4), dilations=(2, 2), padding="VALID"
+    conv_same = Conv2D(filter_shape=(3, 3, 3, 4), filter_stride=(1, 1), padding="SAME", bias=True)
+    zero_same = conv_same(inputs, w=w, bias=b)
+    dn = jax.lax.conv_dimension_numbers(inputs.shape, w.shape, ("NHWC", "HWIO", "NHWC"))
+    jax_same = (
+        jax.lax.conv_general_dilated(
+            jnp.asarray(inputs), jnp.asarray(w), (1, 1), "SAME", dimension_numbers=dn
+        )
+        + b
     )
-    out_zero_valid = layer_zero_valid(inputs, w=w)
-    # eff_w = (3-1)*2+1 = 5. output = (8-5+1)/1 = 4
-    assert out_zero_valid.shape == (2, 4, 4, 4)
+    np.testing.assert_allclose(zero_same, jax_same, atol=1e-4)
 
-    # is_causal = True
-    layer_zero_causal = Conv2D(
-        filter_shape=(3, 3, 3, 4), padding="SAME", is_causal=True
+    conv_valid = Conv2D(
+        filter_shape=(3, 3, 3, 4), filter_stride=(2, 2), padding="VALID", bias=False
     )
-    out_zero_causal = layer_zero_causal(inputs, w=w)
-    assert out_zero_causal.shape == (2, 8, 8, 4)
+    zero_valid = conv_valid(inputs, w=w)
+    jax_valid = jax.lax.conv_general_dilated(
+        jnp.asarray(inputs), jnp.asarray(w), (2, 2), "VALID", dimension_numbers=dn
+    )
+    np.testing.assert_allclose(zero_valid, jax_valid, atol=1e-4)
+
+    conv_causal = Conv2D(
+        filter_shape=(3, 3, 3, 4),
+        is_causal=True,
+        mask_t=np.ones((3, 3, 3, 4), dtype=np.float32),
+        weight_norm_tpl=Identity(),
+    )
+    out_causal = conv_causal(inputs, w=w)
+    inputs_mod = inputs.copy()
+    inputs_mod[:, 3:, :, :] += 10.0
+    out_causal_mod = conv_causal(inputs_mod, w=w)
+    np.testing.assert_allclose(out_causal[:, :3, :, :], out_causal_mod[:, :3, :, :], atol=1e-5)
+
+    paddings = np.array(
+        [[0.0, 0.0, 0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32
+    )
+    out_padded = conv_same(inputs, paddings=paddings, w=w, bias=b)
+    inputs_zeroed = inputs.copy()
+    inputs_zeroed[0, 4:, :, :] = 0.0
+    np.testing.assert_allclose(out_padded, conv_same(inputs_zeroed, w=w, bias=b), atol=1e-4)
+
+    conv_grouped = Conv2D(filter_shape=(3, 3, 1, 3))
+    w_grp = np.ones((3, 3, 1, 3), dtype=np.float32)
+    out_grp = conv_grouped(np.ones((1, 4, 4, 3), dtype=np.float32), w=w_grp)
+    assert float(out_grp[0, 1, 1, 0]) == 9.0
+
+    np.testing.assert_allclose(Conv2D()(inputs), np.zeros_like(inputs), atol=1e-6)
 
 
-def test_convbnact_equivalence():
-    """Executes the test_convbnact_equivalence test.
+def test_conv_bn_act_variants() -> None:
+    """Verify `ConvBNAct` and `ConvBNActWithPadding` including strided padding downsampling."""
+    inputs = np.ones((2, 4, 4, 3), dtype=np.float32)
+    paddings = np.array([[0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+    w = np.ones((3, 3, 3, 4), dtype=np.float32)
 
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
-    w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
-    layer_zero = ConvBNAct(filter_shape=(3, 3, 3, 4), padding="SAME")
-    out_zero = layer_zero(inputs, w=w)
-    assert out_zero.shape == (2, 8, 8, 4)
-    assert np.all(out_zero >= 0)  # relu check
+    layer = ConvBNAct(
+        filter_shape=(3, 3, 3, 4),
+        batch_norm_tpl=BatchNorm(dim=4),
+        activation_tpl=GELU(),
+    )
+    out = layer(inputs, paddings=paddings, w=w)
+    assert out.shape == (2, 4, 4, 4)
+    assert np.all(np.asarray(out[0, 2:]) == 0.0)
 
+    layer_pad = ConvBNActWithPadding(filter_shape=(3, 3, 3, 4), filter_stride=(2, 2))
+    res = layer_pad(inputs, paddings=paddings, w=w)
+    assert isinstance(res, tuple)
+    assert res[0].shape == (2, 2, 2, 4)
+    assert res[1] is not None and res[1].shape == (2, 2)
+    np.testing.assert_allclose(res[1], np.array([[0.0, 1.0], [0.0, 0.0]]))
 
-def test_convbnactwithpadding_equivalence():
-    """Executes the test_convbnactwithpadding_equivalence test.
+    layer_valid_pad = ConvBNActWithPadding(
+        filter_shape=(2, 2, 3, 4), filter_stride=(1, 1), padding="VALID"
+    )
+    res_val = layer_valid_pad(inputs, paddings=paddings, w=w[:2, :2])
+    assert isinstance(res_val, tuple) and res_val[1] is not None
+    assert res_val[1].shape == (2, 3)
 
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
-    w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
-    paddings = np.zeros((2, 8)).astype(np.float32)
-    paddings[:, 6:] = 1.0
-
-    layer_zero = ConvBNActWithPadding(filter_shape=(3, 3, 3, 4), filter_stride=(2, 2))
-    out_zero, out_pad = layer_zero(inputs, paddings=paddings, w=w)
-    assert out_zero.shape == (2, 4, 4, 4)
-    assert out_pad.shape == (2, 4)
-
-    # testing without padding provided
-    out_zero_nopad, out_pad_nopad = layer_zero(inputs, w=w)
-    assert out_pad_nopad is None
+    out_no_pad = layer_pad(inputs, w=w)
+    assert not isinstance(out_no_pad, tuple) and out_no_pad.shape == (2, 2, 2, 4)
 
 
-def test_depthwiseconv1d_equivalence():
-    """Executes the test_depthwiseconv1d_equivalence test.
+def test_depthwise_and_light_conv1d() -> None:
+    """Verify `DepthwiseConv1D`, `CausalDepthwiseConv1D`, and `LightConv1D` numerically."""
+    inputs = np.ones((2, 6, 4), dtype=np.float32)
+    paddings = np.array(
+        [[0.0, 0.0, 0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32
+    )
+    w = np.ones((3, 1, 4), dtype=np.float32)
+    b = np.full((4,), 0.5, dtype=np.float32)
 
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
-    w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
+    dconv = DepthwiseConv1D(filter_shape=(3, 1, 4), bias=True)
+    out = dconv(inputs, paddings=paddings, w=w, bias=b)
+    assert out.shape == (2, 6, 4)
+    np.testing.assert_allclose(out[1, 1, :], np.full((4,), 3.5), atol=1e-5)
+    np.testing.assert_allclose(out[0, 4:, :], 0.0, atol=1e-5)
 
-    layer_zero = DepthwiseConv1D(filter_shape=(3, 4, 8))
-    out_zero = layer_zero(inputs, w=w)
-    assert out_zero.shape == (2, 10, 8)
+    dconv_strided = DepthwiseConv1D(filter_shape=(3, 1, 4), filter_stride=(2,))
+    out_strided = dconv_strided(inputs, paddings=paddings, w=w)
+    assert out_strided.shape == (2, 3, 4)
+    np.testing.assert_allclose(out_strided[0, 2, :], 0.0, atol=1e-5)
 
-    # check implicit w init
-    out_zero_init = DepthwiseConv1D(filter_shape=(3, 4, 8))(inputs)
-    np.testing.assert_allclose(out_zero_init, np.zeros((2, 10, 8)))
+    cdconv = CausalDepthwiseConv1D(kernel_size=3, hidden_dims=4, bias=True)
+    x_seq = np.arange(1, 25, dtype=np.float32).reshape((1, 6, 4))
+    out_causal = cdconv(x_seq, w=w, bias=b)
+    x_seq_future_mod = x_seq.copy()
+    x_seq_future_mod[:, 3:, :] += 50.0
+    out_causal_mod = cdconv(x_seq_future_mod, w=w, bias=b)
+    np.testing.assert_allclose(out_causal[:, :3, :], out_causal_mod[:, :3, :], atol=1e-5)
 
+    lconv = LightConv1D(input_dims=4, kernel_size=3)
+    w_start = np.concatenate(
+        [np.eye(4, dtype=np.float32), np.zeros((4, 4), dtype=np.float32)], axis=-1
+    )
+    w_end = np.eye(4, dtype=np.float32)
+    out_lconv = lconv(x_seq, paddings=paddings[:1], w_start=w_start, w_conv=w, w_end=w_end)
+    assert out_lconv.shape == (1, 6, 4)
+    np.testing.assert_allclose(out_lconv[0, 4:, :], 0.0, atol=1e-5)
+    assert np.any(np.asarray(out_lconv[0, :4, :]) != 0.0)
 
-def test_causaldepthwiseconv1d_equivalence():
-    """Executes the test_causaldepthwiseconv1d_equivalence test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
-    w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
-
-    layer_zero = CausalDepthwiseConv1D(filter_shape=(3, 4, 8))
-    out_zero = layer_zero(inputs, w=w)
-    assert out_zero.shape == (2, 10, 8)
-
-    # check implicit w init
-    out_zero_init = CausalDepthwiseConv1D(filter_shape=(3, 4, 8))(inputs)
-    np.testing.assert_allclose(out_zero_init, np.zeros((2, 10, 8)))
-
-
-def test_lightconv1d_equivalence():
-    """Executes the test_lightconv1d_equivalence test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
-    layer_zero = LightConv1D(kernel_size=3)
-    out_zero = layer_zero(inputs)
-    assert out_zero.shape == (2, 10, 4)
-
-
-def test_conv2d_no_bias():
-    """Executes the test_conv2d_no_bias test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
-    layer_zero = Conv2D(filter_shape=(3, 3, 3, 4), bias=False)
-    out = layer_zero(inputs)
-    assert out.shape == (2, 8, 8, 4)
-
-
-def test_convbnact_with_bn():
-    """Executes the test_convbnact_with_bn test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
-    layer_zero = ConvBNAct(filter_shape=(3, 3, 3, 4))
-    bn_gamma = np.random.normal(size=(4,)).astype(np.float32)
-    bn_beta = np.random.normal(size=(4,)).astype(np.float32)
-    out = layer_zero(inputs, bn_gamma=bn_gamma, bn_beta=bn_beta)
-    assert out.shape == (2, 8, 8, 4)
-
-
-def test_convbnactwithpadding_with_bn():
-    """Executes the test_convbnactwithpadding_with_bn test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
-    paddings = np.zeros((2, 8)).astype(np.float32)
-    layer_zero = ConvBNActWithPadding(filter_shape=(3, 3, 3, 4))
-    bn_gamma = np.random.normal(size=(4,)).astype(np.float32)
-    bn_beta = np.random.normal(size=(4,)).astype(np.float32)
-    out, pad = layer_zero(inputs, paddings=paddings, bn_gamma=bn_gamma, bn_beta=bn_beta)
-    assert out.shape == (2, 8, 8, 4)
-
-
-def test_depthwiseconv1d_coverage():
-    """Executes the test_depthwiseconv1d_coverage test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
-    w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
-    layer_zero = DepthwiseConv1D(filter_shape=(3, 4, 8), filter_stride=(0,))
-    out = layer_zero(inputs, w=w)
-    assert out.shape == (2, 10, 8)
-
-
-def test_causaldepthwiseconv1d_coverage():
-    """Executes the test_causaldepthwiseconv1d_coverage test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
-    w = np.random.normal(size=(3, 4, 8)).astype(np.float32)
-    layer_zero = CausalDepthwiseConv1D(filter_shape=(3, 4, 8), filter_stride=(0,))
-    out = layer_zero(inputs, w=w)
-    assert out.shape == (2, 10, 8)
-
-
-def test_lightconv1d_w_coverage():
-    """Executes the test_lightconv1d_w_coverage test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 10, 4)).astype(np.float32)
-    w = np.random.normal(size=(3, 4, 4)).astype(np.float32)
-    layer_zero = LightConv1D(kernel_size=3)
-    out = layer_zero(inputs, w=w)
-    assert out.shape == (2, 10, 4)
-
-
-def test_conv2d_bias_none_coverage():
-    """Executes the test_conv2d_bias_none_coverage test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 8, 8, 3)).astype(np.float32)
-    layer_zero = Conv2D(filter_shape=(3, 3, 3, 4), bias=True)
-    out = layer_zero(inputs, bias=None)
-    assert out.shape == (2, 8, 8, 4)
+    lconv_causal = LightConv1D(
+        input_dims=4, kernel_size=3, is_causal=True, conv_activation_tpl=GELU()
+    )
+    out_lc = lconv_causal(x_seq, w_start=w_start, w_conv=w, w_end=w_end)
+    assert out_lc.shape == (1, 6, 4)
+    assert np.any(np.asarray(out_lc) != 0.0)

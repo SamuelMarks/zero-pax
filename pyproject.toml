@@ -8,25 +8,70 @@ version = "0.1.0"
 description = "Zero-dependency pure Python implementation of the Pax API surface."
 authors = [{ name = "Samuel Marks" }]
 requires-python = ">=3.9"
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "optional-dependencies"]
 
 [tool.hatch.metadata.hooks.requirements_txt]
 files = ["requirements.txt"]
 
-[project.optional-dependencies]
-test = ["pytest", "pytest-cov"]
+[tool.hatch.metadata.hooks.requirements_txt.optional-dependencies]
+test = ["requirements-test.txt"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
-dependencies = ["ml-switcheroo-compiler"]
+[tool.ruff]
+line-length = 100
+target-version = "py39"
 
 [tool.ruff.lint]
-ignore = ['E402', 'F401', 'F841', 'E741']
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "D"]
+ignore = ["E501", "D107", "D203", "D213"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.pytest.ini_options]
 pythonpath = "src"
-addopts = "--cov=src --cov-fail-under=80"
+addopts = "--cov=src/zero_pax --cov-branch --cov-report=term-missing --cov-fail-under=100"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/zero_pax"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
 
 [tool.mypy]
+python_version = "3.9"
+plugins = ["pydantic.mypy"]
+strict = true
 ignore_missing_imports = true
+disallow_any_unimported = false
+disallow_any_expr = false
+disallow_any_explicit = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.interrogate]
+ignore-init-method = false
+ignore-init-module = false
+ignore-magic = false
+ignore-semiprivate = false
+ignore-private = false
+ignore-property-decorators = false
+ignore-module = false
+ignore-nested-functions = false
+ignore-nested-classes = false
+fail-under = 100
+verbose = 2

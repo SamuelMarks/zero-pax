@@ -1,254 +1,216 @@
-"""Tests for the test_attentions_port module."""
+"""Tests for attention layers in zero_pax.praxis.layers.attentions."""
+
+from __future__ import annotations
 
 import numpy as np
-import pytest
+
 from zero_pax.praxis.layers import (
+    AttentionProjection,
     DotProductAttention,
     DotProductAttentionWithContext,
     DotProductAttentionWithContextXL,
     DotProductAttentionXL,
+    GroupedQueryAttention,
+    Identity,
+    LayerNorm,
     LocalSelfAttention,
     LocalSelfAttentionAlibi,
     LocalSelfAttentionRelativeBias,
     LocalSelfAttentionXL,
+    RelativeBias,
     SelfAttentionWithNormAndResidual,
-    AttentionProjection,
-    GroupedQueryAttention,
 )
 
 
-def test_attention_projection():
-    """Executes the test_attention_projection test.
+def test_attention_projection() -> None:
+    """Verify `AttentionProjection` input and output modes numerically."""
+    inputs = np.arange(1, 33, dtype=np.float32).reshape((2, 2, 8))
+    w_in = np.ones((8, 2, 4), dtype=np.float32) * 0.25
+    b_in = np.full((2, 4), 0.5, dtype=np.float32)
 
-    Returns:
-        The result of the test.
-    """
-    inputs_in = np.random.normal(size=(2, 4, 8)).astype(np.float32)
     proj_in = AttentionProjection(
-        input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=False
+        input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=False, use_bias=True
     )
-    out_in = proj_in(inputs_in)
-    assert out_in.shape == (2, 4, 2, 4)
+    out = proj_in(inputs, w=w_in, b=b_in)
+    expected_in = np.einsum("btd,dnh->btnh", inputs, w_in) + b_in
+    np.testing.assert_allclose(out, expected_in, atol=1e-5)
 
-    # with bias
-    proj_in_b = AttentionProjection(
-        input_dim=8,
-        num_heads=2,
-        dim_per_head=4,
-        is_output_projection=False,
-        use_bias=True,
+    proj_comb = AttentionProjection(
+        input_dim=8, num_heads=2, dim_per_head=4, attention_combine_dims=True, use_bias=False
     )
-    out_in_b = proj_in_b(inputs_in)
-    assert out_in_b.shape == (2, 4, 2, 4)
+    out_comb = proj_comb(inputs, w=w_in)
+    np.testing.assert_allclose(out_comb, expected_in.reshape((2, 2, 8)) - 0.5, atol=1e-5)
 
-    inputs_out = np.random.normal(size=(2, 4, 2, 4)).astype(np.float32)
+    w_out = np.ones((2, 4, 8), dtype=np.float32) * 0.5
+    b_out = np.full((8,), 0.1, dtype=np.float32)
     proj_out = AttentionProjection(
-        input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=True
+        input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=True, use_bias=True
     )
-    out_out = proj_out(inputs_out)
-    assert out_out.shape == (2, 4, 8)
+    back = proj_out(out, w=w_out, b=b_out)
+    expected_back = np.einsum("btnh,nhd->btd", np.asarray(out), w_out) + b_out
+    np.testing.assert_allclose(back, expected_back, atol=1e-5)
 
-    # with bias
-    proj_out_b = AttentionProjection(
+
+def test_relative_bias() -> None:
+    """Verify `RelativeBias` bidirectional symmetry and causal bucket clipping."""
+    w_table = np.arange(1, 17, dtype=np.float32).reshape((2, 8))
+    rb_bi = RelativeBias(
+        num_heads=2,
+        relative_attention_num_buckets=8,
+        relative_attention_max_distance=16,
+        bidirectional=True,
+    )
+    out_bi = rb_bi(4, 4, w=w_table)
+    assert out_bi.shape == (1, 2, 4, 4)
+    np.testing.assert_allclose(out_bi[:, :, 0, 0], out_bi[:, :, 2, 2], atol=1e-5)
+    assert not np.allclose(out_bi[:, :, 0, 2], out_bi[:, :, 2, 0])
+
+    rb_uni = RelativeBias(
+        num_heads=2,
+        relative_attention_num_buckets=8,
+        relative_attention_max_distance=16,
+        bidirectional=False,
+        use_xavier_init=True,
+    )
+    pos = np.array([[0, 1, 2, 3], [0, 1, 2, 3]], dtype=np.int32)
+    out_uni = rb_uni(pos, pos, w=w_table)
+    assert out_uni.shape == (2, 2, 4, 4)
+    np.testing.assert_allclose(out_uni[:, :, 0, 1], out_uni[:, :, 0, 3], atol=1e-5)
+
+
+def test_dot_product_attention_variants() -> None:
+    """Verify `DotProductAttention` and its context, XL, RoPE, dconv, and local subclasses."""
+    inputs = np.arange(1, 65, dtype=np.float32).reshape((2, 4, 8)) * 0.1
+    w_qkv = np.eye(8, dtype=np.float32).reshape((8, 2, 4))
+    w_post = np.eye(8, dtype=np.float32).reshape((2, 4, 8))
+
+    dpa = DotProductAttention(
         input_dim=8,
         num_heads=2,
         dim_per_head=4,
-        is_output_projection=True,
-        use_bias=True,
+        atten_logit_cap=50.0,
+        scale_logits_by_head_dims=True,
+        relative_bias_tpl=RelativeBias(num_heads=2),
+        dropout_tpl=Identity(),
+        zero_fully_masked=True,
+        use_rotary_position_emb=True,
+        dconv_qkv=True,
+        causal_depthwise_conv1d_tpl=Identity(),
+        attention_extra_logit=0.0,
     )
-    out_out_b = proj_out_b(inputs_out)
-    assert out_out_b.shape == (2, 4, 8)
-
-
-def test_dot_product_attention():
-    """Executes the test_dot_product_attention test.
-
-    Returns:
-        The result of the test.
-    """
-    query = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    key = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    value = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-
-    layer = DotProductAttention(num_heads=2, dim_per_head=4)
-    out = layer(query, key, value)
-    assert out.shape == (2, 4, 2, 4)
-
-    # with atten_mask
-    mask = np.zeros((2, 2, 4, 4))
-    mask[:, :, :, 2:] = 1.0  # mask out last two elements
-    out_masked = layer(query, key, value, atten_mask=mask)
-    assert out_masked.shape == (2, 4, 2, 4)
-
-
-def test_grouped_query_attention():
-    """Executes the test_grouped_query_attention test.
-
-    Returns:
-        The result of the test.
-    """
-    query = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    key = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    value = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-
-    layer = GroupedQueryAttention(num_heads=4, num_kv_heads=2, dim_per_head=4)
-    out = layer(query, key, value)
-    assert out.shape == (2, 4, 4, 4)
-
-    # with mask
-    mask = np.zeros((2, 4, 4, 4))
-    out_masked = layer(query, key, value, atten_mask=mask)
-    assert out_masked.shape == (2, 4, 4, 4)
-
-
-def test_wrappers_coverage():
-    """Executes the test_wrappers_coverage test.
-
-    Returns:
-        The result of the test.
-    """
-    query = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    key = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    value = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-
-    for cls in [
-        DotProductAttentionWithContext,
-        DotProductAttentionWithContextXL,
-        DotProductAttentionXL,
-        LocalSelfAttention,
-        LocalSelfAttentionAlibi,
-        LocalSelfAttentionRelativeBias,
-        LocalSelfAttentionXL,
-    ]:
-        layer = cls()
-        out = layer(query, key, value)
-        # Default num_heads=1, dim_per_head=1
-        assert out.shape == (2, 4, 1, 1)
-
-
-def test_self_attention_norm_residual():
-    """Executes the test_self_attention_norm_residual test.
-
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
-    layer.force_no_residual = True
-    layer.force_no_residual = True
-    out = layer(inputs)
+    mask_2d = np.zeros((4, 4), dtype=np.float32)
+    out = dpa(
+        inputs,
+        atten_mask=mask_2d,
+        query_w=w_qkv,
+        key_w=w_qkv,
+        value_w=w_qkv,
+        post_w=w_post,
+        per_dim_scale=np.ones((4,), dtype=np.float32),
+    )
     assert out.shape == (2, 4, 8)
+    assert np.any(np.asarray(out) != 0.0)
 
-    # Check shape mismatch bypass
-    layer2 = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=2)
-    out2 = layer2(inputs)
-    assert out2.shape == (2, 4, 8)
+    mask_3d = np.full((2, 4, 4), -1e9, dtype=np.float32)
+    out_masked = dpa(
+        inputs, atten_mask=mask_3d, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
+    )
+    np.testing.assert_allclose(out_masked, np.zeros((2, 4, 8)), atol=1e-5)
 
+    layer_ctx = DotProductAttentionWithContext(
+        input_dim=8, num_heads=2, dim_per_head=4, left_context=1, right_context=0
+    )
+    out_ctx_1 = layer_ctx(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
+    inputs_future_changed = inputs.copy()
+    inputs_future_changed[:, 2:, :] += 100.0
+    out_ctx_2 = layer_ctx(
+        inputs_future_changed, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
+    )
+    np.testing.assert_allclose(out_ctx_1[:, :2, :], out_ctx_2[:, :2, :], atol=1e-5)
 
-def test_self_attention_norm_residual_miss():
-    """Executes the test_self_attention_norm_residual_miss test.
+    xl_layer = DotProductAttentionXL(input_dim=8, num_heads=2, dim_per_head=4, rel_pos_emb_dim=4)
+    out_xl = xl_layer(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
+    out_no_xl = DotProductAttention(input_dim=8, num_heads=2, dim_per_head=4)(
+        inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
+    )
+    assert not np.allclose(out_xl, out_no_xl)
 
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
-    layer.force_no_residual = True
+    assert DotProductAttentionWithContextXL(
+        input_dim=8, num_heads=2, left_context=2, rel_pos_emb_dim=4
+    )(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post).shape == (2, 4, 8)
 
-    # mock the projection output to have a different shape
-    class BadProj:
-        """Executes the BadProj operation."""
+    local_blk = LocalSelfAttention(input_dim=8, num_heads=2, dim_per_head=4, block_size=1)
+    out_blk1 = local_blk(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
+    inputs_far = inputs.copy()
+    inputs_far[:, 3, :] += 50.0
+    out_blk2 = local_blk(inputs_far, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
+    np.testing.assert_allclose(out_blk1[:, 0, :], out_blk2[:, 0, :], atol=1e-5)
 
-        def __init__(self, *args, **kwargs):
-            """Executes the __init__ test.
-
-            Args:
-                self: The self parameter.
-
-            Returns:
-                The result of the test.
-            """
-            pass
-
-        def __call__(self, x):
-            """Executes the __call__ test.
-
-            Args:
-                self: The self parameter.
-                x: The x parameter.
-
-            Returns:
-                The result of the test.
-            """
-            return np.zeros((2, 4, 9))
-
-    import zero_pax.praxis.layers as zpl
-
-    orig = zpl.AttentionProjection
-    zpl.AttentionProjection = BadProj
-    try:
-        out = layer(inputs)
-        assert out.shape == (2, 4, 9)
-
-    finally:
-        zpl.AttentionProjection = orig
+    assert LocalSelfAttentionXL(input_dim=8, num_heads=2, rel_pos_emb_dim=4)(
+        inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
+    ).shape == (2, 4, 8)
+    assert LocalSelfAttentionRelativeBias(input_dim=8, num_heads=2)(
+        inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
+    ).shape == (2, 4, 8)
+    out_alibi = LocalSelfAttentionAlibi(input_dim=8, num_heads=2, left_context=2)(
+        inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
+    )
+    assert out_alibi.shape == (2, 4, 8)
+    assert np.any(np.asarray(out_alibi) != 0.0)
 
 
-def test_self_attention_norm_residual_force_no_residual():
-    """Executes the test_self_attention_norm_residual_force_no_residual test.
+def test_grouped_query_attention() -> None:
+    """Verify `GroupedQueryAttention` head broadcasting, temperature, bias, and RoPE."""
+    inputs = np.arange(1, 65, dtype=np.float32).reshape((2, 4, 8)) * 0.1
+    w_q = np.ones((8, 4, 2), dtype=np.float32) * 0.2
+    w_kv = np.ones((8, 2, 2), dtype=np.float32) * 0.2
+    w_o = np.ones((4, 2, 8), dtype=np.float32) * 0.2
+    b_o = np.full((8,), 0.5, dtype=np.float32)
 
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
-    layer.force_no_residual = True
-    out = layer(inputs)
+    gqa = GroupedQueryAttention(
+        input_dim=8,
+        num_heads=4,
+        num_kv_heads=2,
+        dim_per_head=2,
+        atten_logit_cap=20.0,
+        atten_temp=0.5,
+        rope_min_max_timescales=(1, 10000),
+        dropout_tpl=Identity(),
+    )
+    out = gqa(
+        inputs,
+        atten_mask=np.zeros((2, 4, 4, 4), dtype=np.float32),
+        w_q=w_q,
+        w_k=w_kv,
+        w_v=w_kv,
+        w_o=w_o,
+        b_q=np.zeros((4, 2), dtype=np.float32),
+        b_k=np.zeros((2, 2), dtype=np.float32),
+        b_v=np.zeros((2, 2), dtype=np.float32),
+        b_o=b_o,
+    )
     assert out.shape == (2, 4, 8)
+    assert np.all(np.abs(np.asarray(out) - 0.5) > 0.0)
+
+    gqa_odd = GroupedQueryAttention(input_dim=8, num_heads=4, num_kv_heads=3, dim_per_head=2)
+    assert gqa_odd(inputs).shape == (2, 4, 8)
 
 
-def test_self_attention_norm_residual_shape_mismatch():
-    """Executes the test_self_attention_norm_residual_shape_mismatch test.
+def test_self_attention_with_norm_and_residual() -> None:
+    """Verify `SelfAttentionWithNormAndResidual` pre/post-norm and residual weights."""
+    inputs = np.arange(1, 65, dtype=np.float32).reshape((2, 4, 8)) * 0.1
 
-    Returns:
-        The result of the test.
-    """
-    inputs = np.random.normal(size=(2, 4, 8)).astype(np.float32)
-    layer = SelfAttentionWithNormAndResidual(num_heads=2, dim_per_head=4)
+    pre = SelfAttentionWithNormAndResidual(
+        num_heads=2, pre_layer_norm=True, norm_tpl=LayerNorm(dim=8), input_weight=2.0
+    )
+    np.testing.assert_allclose(pre(inputs), inputs * 2.0, atol=1e-5)
 
-    # mock projection to return totally different shape
-    class BadProj:
-        """Executes the BadProj operation."""
-
-        def __init__(self, *args, **kwargs):
-            """Executes the __init__ test.
-
-            Args:
-                self: The self parameter.
-
-            Returns:
-                The result of the test.
-            """
-            pass
-
-        def __call__(self, x):
-            """Executes the __call__ test.
-
-            Args:
-                self: The self parameter.
-                x: The x parameter.
-
-            Returns:
-                The result of the test.
-            """
-            return np.zeros((2, 4, 9))
-
-    import zero_pax.praxis.layers as zpl
-
-    orig = zpl.AttentionProjection
-    zpl.AttentionProjection = BadProj
-    try:
-        out = layer(inputs)
-        assert out.shape == (2, 4, 9)
-    finally:
-        zpl.AttentionProjection = orig
+    post = SelfAttentionWithNormAndResidual(
+        num_heads=2,
+        pre_layer_norm=False,
+        force_no_residual=True,
+        self_atten_tpl=Identity(),
+        residual_dropout_tpl=Identity(),
+    )
+    expected_post = LayerNorm(dim=8)(inputs)
+    np.testing.assert_allclose(post(inputs), expected_post, atol=1e-5)

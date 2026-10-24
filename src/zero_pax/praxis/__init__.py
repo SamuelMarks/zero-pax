@@ -1,5 +1,13 @@
-"""Core functionality for the __init__ module."""
+"""Praxis namespace package for zero_pax."""
+
+from __future__ import annotations
 
 import ml_switcheroo_compiler as ml_switcheroo
 
-"\nPraxis module.\n"
+from zero_pax.praxis import base, layers
+
+__all__ = [
+    "base",
+    "layers",
+    "ml_switcheroo",
+]

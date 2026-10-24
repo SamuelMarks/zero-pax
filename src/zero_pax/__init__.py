@@ -1,7 +1,14 @@
 """Public API definitions for zero_pax."""
 
-from zero_jax import numpy
+from __future__ import annotations
+
+from zero_pax import _tensor_ops as numpy
+from zero_pax.praxis import layers
+from zero_pax.praxis.base import BasePraxisLayer
 from zero_pax.praxis.layers import (
+    ELU,
+    GELU,
+    SSM,
     AdaptedTransformerFeedForward,
     AttentionProjection,
     AutodiffCheckpointType,
@@ -9,8 +16,8 @@ from zero_pax.praxis.layers import (
     BaseNormalization,
     BatchNorm,
     BertModel,
-    BiTemperedLoss,
     Bias,
+    BiTemperedLoss,
     BregmanPCA,
     CausalDepthwiseConv1D,
     CifgLstmCellSimple,
@@ -27,18 +34,16 @@ from zero_pax.praxis.layers import (
     DotProductAttentionWithContextXL,
     DotProductAttentionXL,
     Dropout,
-    ELU,
     Einsum,
     EinsumOp,
     Embedding,
-    FRnn,
     FeedForward,
+    FRnn,
     FullSoftmax,
-    GELU,
-    GShardSharedEmbeddingSoftmax,
     GlobalPooling,
-    GroupNorm,
     GroupedQueryAttention,
+    GroupNorm,
+    GShardSharedEmbeddingSoftmax,
     Identity,
     IdentityNorm,
     LanguageModel,
@@ -57,8 +62,8 @@ from zero_pax.praxis.layers import (
     LocalSelfAttentionXL,
     LstmCellSimple,
     LstmFrnn,
-    MLPBlock,
     MaskedLmDataAugmenter,
+    MLPBlock,
     MultitaskResidualAdapter,
     Ngrammer,
     PerDimScale,
@@ -68,29 +73,28 @@ from zero_pax.praxis.layers import (
     PositionalEmbedding,
     PositionalEmbedding2D,
     RandomVectorQuantizer,
+    RelativeBias,
     ReLU,
     ReLU6,
-    RelativeBias,
     Repeat,
     ResNet,
     ResNetBlock,
     RmsNorm,
     RmsNormNoScale,
-    SSM,
-    SSMGated,
-    SSMTransformer,
     SelfAttentionWithNormAndResidual,
     SequenceModel,
     Sequential,
     SharedEmbeddingSoftmax,
-    SiLU,
     Sigmoid,
     SigmoidCrossEntropy,
+    SiLU,
     SpectrumAugmenter,
     SquaredReLU,
-    StackFrnn,
+    SSMGated,
+    SSMTransformer,
     StackedTransformer,
     StackedTransformerRepeated,
+    StackFrnn,
     StackingOverTime,
     StochasticResidual,
     Swish,
@@ -102,7 +106,6 @@ from zero_pax.praxis.layers import (
     TransformerFeedForward,
     TransformerFeedForwardMoe,
     TransformerLm,
-    VQNgrammer,
     VanillaBlock,
     VanillaNet,
     VectorQuantization,
@@ -110,94 +113,200 @@ from zero_pax.praxis.layers import (
     VisionTransformer,
     VitEntryLayers,
     VitExitLayers,
+    VQNgrammer,
 )
+from zero_pax.types import BaseParameter, Tensor, TensorOrScalar
 
 
-def __call__(*args, **kwargs):
-    """Executes the __call__ function.
+def __call__(
+    inputs: TensorOrScalar | None = None,
+    *args: TensorOrScalar,
+    **kwargs: TensorOrScalar,
+) -> Tensor | None:
+    """Module-level callable entrypoint returning `inputs` as a `Tensor` if provided.
 
     Args:
-        *args: Variable length argument list.
-        **kwargs: Arbitrary keyword arguments.
+        inputs: Optional input tensor or scalar.
+        *args: Additional positional arguments.
+        **kwargs: Additional keyword arguments.
 
     Returns:
-        The result of the operation.
+        Converted `Tensor` or `None`.
     """
-    pass
+    if inputs is not None:
+        return numpy.asarray(inputs)
+    if args:
+        return numpy.asarray(args[0])
+    return None
 
 
-def init_weights():
-    """Executes the init_weights function.
+def init_weights(
+    layer: BasePraxisLayer | Layer | None = None,
+    *args: TensorOrScalar,
+    **kwargs: TensorOrScalar,
+) -> dict[str, Tensor]:
+    """Initialize and return a parameter weight dictionary for `layer` if provided.
+
+    Args:
+        layer: Optional `BasePraxisLayer` or `Layer` whose registered parameters should be exported.
+        *args: Optional positional arguments.
+        **kwargs: Optional keyword arguments.
 
     Returns:
-        The result of the operation.
+        Dictionary mapping parameter names to `Tensor` objects.
     """
-    pass
+    if layer is not None:
+        layer.setup()
+        return {name: numpy.asarray(param()) for name, param in layer.params.items()}
+    return {}
 
 
-class BaseParameter:
-    """Represents the BaseParameter configuration and behavior.
+class Layer(BasePraxisLayer):
+    """Base stateful layer container managing named `BaseParameter` instances.
 
-    This class encapsulates the functionality for BaseParameter.
-    """
-
-    def __init__(self, value):
-        """Initializes the object.
-
-        Args:
-            value: The value parameter.
-
-        Returns:
-            The result of the operation.
-        """
-        self.value = value
-
-    def __call__(self):
-        """Calls the object as a function.
-
-        Returns:
-            The result of the operation.
-        """
-        return self.value
-
-
-class Layer:
-    """Represents the Layer configuration and behavior.
-
-    This class encapsulates the functionality for Layer.
+    Inherits from `BasePraxisLayer` to unify the `zero_pax` and `zero_pax.praxis` hierarchies.
     """
 
-    def __init__(self, name=None):
-        """Initializes the object.
+    def __init__(self, name: str | None = None) -> None:
+        """Initialize the `Layer` with an optional `name`.
 
         Args:
-            name: The name parameter.
-
-        Returns:
-            The result of the operation.
+            name: Optional string identifier for the layer.
         """
-        self.name = name
-        self.params = {}
+        super().__init__(name=name)
 
-    def register_parameter(self, name, value):
-        """register_parameter function.
+    def __call__(
+        self,
+        inputs: TensorOrScalar,
+        *args: TensorOrScalar,
+        **kwargs: TensorOrScalar,
+    ) -> Tensor:
+        """Pass `inputs` through the base `Layer` as a `Tensor`.
 
         Args:
-            name: The name parameter.
-            value: The value parameter.
+            inputs: Input tensor or scalar.
+            *args: Additional positional arguments.
+            **kwargs: Additional keyword arguments.
 
         Returns:
-            The result of the operation.
+            Converted `Tensor`.
         """
-        self.params[name] = BaseParameter(value)
+        return numpy.asarray(inputs)
 
-    def __call__(self, inputs):
-        """Calls the object as a function.
 
-        Args:
-            inputs: The inputs parameter.
-
-        Returns:
-            The result of the operation.
-        """
-        return inputs
+__all__ = [
+    "AdaptedTransformerFeedForward",
+    "AttentionProjection",
+    "AutodiffCheckpointType",
+    "BaseActivation",
+    "BaseNormalization",
+    "BaseParameter",
+    "BatchNorm",
+    "BertModel",
+    "BiTemperedLoss",
+    "Bias",
+    "BregmanPCA",
+    "CausalDepthwiseConv1D",
+    "CifgLstmCellSimple",
+    "ClassificationMLPModel",
+    "ClassificationModel",
+    "Conformer",
+    "Conv2D",
+    "ConvBNAct",
+    "ConvBNActWithPadding",
+    "CubedReLU",
+    "DepthwiseConv1D",
+    "DotProductAttention",
+    "DotProductAttentionWithContext",
+    "DotProductAttentionWithContextXL",
+    "DotProductAttentionXL",
+    "Dropout",
+    "ELU",
+    "Einsum",
+    "EinsumOp",
+    "Embedding",
+    "FRnn",
+    "FeedForward",
+    "FullSoftmax",
+    "GELU",
+    "GShardSharedEmbeddingSoftmax",
+    "GlobalPooling",
+    "GroupNorm",
+    "GroupedQueryAttention",
+    "Identity",
+    "IdentityNorm",
+    "LanguageModel",
+    "LanguageModelContinuousBatching",
+    "LanguageModelDPO",
+    "LanguageModelType",
+    "Layer",
+    "LayerNorm",
+    "LayerNormalizedLstmCellSimple",
+    "LayerwiseShardablePipelined",
+    "LeakyReLU",
+    "LightConv1D",
+    "Linear",
+    "LocalSelfAttention",
+    "LocalSelfAttentionAlibi",
+    "LocalSelfAttentionRelativeBias",
+    "LocalSelfAttentionXL",
+    "LstmCellSimple",
+    "LstmFrnn",
+    "MLPBlock",
+    "MaskedLmDataAugmenter",
+    "MultitaskResidualAdapter",
+    "Ngrammer",
+    "PerDimScale",
+    "PipelinedTransformer",
+    "Pooling",
+    "Pooling1D",
+    "PositionalEmbedding",
+    "PositionalEmbedding2D",
+    "RandomVectorQuantizer",
+    "ReLU",
+    "ReLU6",
+    "RelativeBias",
+    "Repeat",
+    "ResNet",
+    "ResNetBlock",
+    "RmsNorm",
+    "RmsNormNoScale",
+    "SSM",
+    "SSMGated",
+    "SSMTransformer",
+    "SelfAttentionWithNormAndResidual",
+    "SequenceModel",
+    "Sequential",
+    "SharedEmbeddingSoftmax",
+    "SiLU",
+    "Sigmoid",
+    "SigmoidCrossEntropy",
+    "SpectrumAugmenter",
+    "SquaredReLU",
+    "StackFrnn",
+    "StackedTransformer",
+    "StackedTransformerRepeated",
+    "StackingOverTime",
+    "StochasticResidual",
+    "Swish",
+    "Tanh",
+    "TemporalShifting",
+    "TrainablePositionalEmbedding",
+    "Transformer",
+    "TransformerEncoderDecoder",
+    "TransformerFeedForward",
+    "TransformerFeedForwardMoe",
+    "TransformerLm",
+    "VQNgrammer",
+    "VanillaBlock",
+    "VanillaNet",
+    "VectorQuantization",
+    "VectorQuantizer",
+    "VisionTransformer",
+    "VitEntryLayers",
+    "VitExitLayers",
+    "__call__",
+    "init_weights",
+    "layers",
+    "numpy",
+]
