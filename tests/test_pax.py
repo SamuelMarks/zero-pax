@@ -8,11 +8,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 
-import numpy as np
 import pytest
 
 import zero_pax
-from scripts import check_dependencies, check_docstrings, lint_typing_and_hacks
+from scripts import (
+    check_compliance,
+    check_dependencies,
+    check_docstrings,
+    lint_typing_and_hacks,
+)
+from tests import conftest as np
 from zero_pax import BaseParameter, LanguageModelType, Layer
 from zero_pax import _tensor_ops as t_ops
 from zero_pax.praxis.base import BasePraxisLayer, as_tensor_if_present, instantiate_layer
@@ -175,6 +180,30 @@ def test_tensor_ops_wrappers() -> None:
     assert t_ops.asarray(a).dtype == t_ops.DType.float32
     assert a.size == 4
     assert a.tolist() == [[1.0, 3.0], [4.0, 2.0]]
+    assert a.copy().tolist() == [[1.0, 3.0], [4.0, 2.0]]
+    assert a.__array_interface__["shape"] == (2, 2)
+
+    class _MockArrayLike:
+        """Array-like stub implementing `ToListProtocol`."""
+
+        @property
+        def shape(self) -> tuple[int, ...]:
+            """Return the array shape.
+
+            Returns:
+                Shape tuple `(2,)`.
+            """
+            return (2,)
+
+        def tolist(self) -> list[float]:
+            """Return nested list elements.
+
+            Returns:
+                List of floats.
+            """
+            return [9.0, 10.0]
+
+    assert t_ops.asarray(_MockArrayLike()).tolist() == [9.0, 10.0]
     assert t_ops.asarray(5.0).tolist() == 5.0
     assert a.astype("int32").dtype == t_ops.DType.int32
     assert a.reshape(4).shape == (4,)
@@ -352,6 +381,17 @@ def test_static_lint_and_docstring_scripts() -> None:
 
     assert check_dependencies.is_allowed_module("pydantic")
     assert not check_dependencies.is_allowed_module("torch")
+    assert not check_dependencies.is_allowed_module("grain", is_test=True)
+    assert not check_dependencies.is_allowed_module("chex", is_test=True)
+    assert not check_dependencies.is_allowed_module("orbax", is_test=True)
+    assert not check_dependencies.is_allowed_module("optax", is_test=True)
+    assert check_dependencies.is_allowed_module("pytest", is_test=True)
+
+    assert check_compliance.verify_module_hierarchy() == []
+    assert check_compliance._parse_expected_default("'```(None)```'") == (True, None)
+    assert check_compliance._parse_expected_default("'768 * 256'") == (True, 196608)
+    assert check_compliance._parse_expected_default("'template_field(None)'") == (False, None)
+    assert check_compliance.main() == 0
 
     doc_args = check_docstrings._extract_documented_args(
         "\n".join(["Summary.", "", "Args:", "    alpha: First."])

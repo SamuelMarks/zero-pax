@@ -51,7 +51,7 @@ repos:
         pass_filenames: false
 
       - id: check-compliance
-        name: Check Snapshot and Semantic Plan Compliance
+        name: Check ml-ecosystem-snapshots v0.0.5 and Semantic Plan Compliance
         entry: python3 scripts/check_compliance.py
         language: system
         types: [python]

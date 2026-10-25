@@ -41,7 +41,7 @@ class VanillaBlock(BasePraxisLayer):
     conv_params: LayerTpl = None
     kernel_size: int = 3
     stride: int = 1
-    negative_slope: float = 0.0
+    negative_slope: float = 0.4
     activation_tpl: LayerTpl = None
     body: Sequence[LayerTpl] | None = None
 
@@ -125,14 +125,14 @@ class VanillaNet(BasePraxisLayer):
     conv_params: LayerTpl = None
     block_params: LayerTpl = None
     strides: Sequence[int] = (1, 2, 2, 2)
-    channels: Sequence[int] = (64, 128, 256, 512)
-    blocks: Sequence[int] = (2, 2, 2, 2)
+    channels: Sequence[int] = (256, 512, 1024, 2048)
+    blocks: Sequence[int] = (3, 4, 6, 3)
     kernels: Sequence[int] = (3, 3, 3, 3)
     entryflow_conv_params: LayerTpl = None
-    entryflow_conv_kernel: tuple[int, int] = (7, 7)
+    entryflow_conv_kernel: Sequence[int] = (7, 7)
     entryflow_conv_stride: tuple[int, int] = (2, 2)
     output_spatial_pooling_params: LayerTpl = None
-    negative_slope: float = 0.0
+    negative_slope: float = 0.4
 
     def __call__(
         self,
@@ -333,11 +333,11 @@ class ResNet(BasePraxisLayer):
     conv_params: LayerTpl = None
     block_params: LayerTpl = None
     strides: Sequence[int] = (1, 2, 2, 2)
-    channels: Sequence[int] = (64, 128, 256, 512)
+    channels: Sequence[int] = (256, 512, 1024, 2048)
     blocks: Sequence[int] = (3, 4, 6, 3)
     kernels: Sequence[int] = (3, 3, 3, 3)
     entryflow_conv_params: LayerTpl = None
-    entryflow_conv_kernel: tuple[int, int] = (7, 7)
+    entryflow_conv_kernel: Sequence[int] = (7, 7, 3)
     entryflow_conv_stride: tuple[int, int] = (2, 2)
     entry_max_pool: bool = True
     output_spatial_pooling_params: LayerTpl = None
@@ -429,15 +429,15 @@ class Conformer(BasePraxisLayer):
         remat: Whether activation rematerialization is enabled.
     """
 
-    input_dims: int = 0
-    model_dims: int = 0
+    input_dims: int | None = None
+    model_dims: int = 512
     kernel_size: int = 32
     ff_activation_tpl: LayerTpl = None
     ff_residual_weight: float = 0.5
     ffn_dim_multiplier: int = 4
     atten_num_heads: int = 8
     layer_order: str = "mhsa_before_conv"
-    dropout_prob: float | None = 0.0
+    dropout_prob: float | None = None
     conv_residual_dropout: float | None = None
     atten_residual_dropout: float | None = None
     ffn_residual_dropout: float | None = None
@@ -481,8 +481,10 @@ class Conformer(BasePraxisLayer):
         x = self._to_tensor(inputs)
         d_model = (
             self.input_dims
-            if self.input_dims > 0
-            else (self.model_dims if self.model_dims > 0 else x.shape[-1])
+            if (self.input_dims is not None and self.input_dims > 0)
+            else (
+                self.model_dims if (self.model_dims > 0 and self.model_dims != 512) else x.shape[-1]
+            )
         )
         f_hid = max(1, self.ffn_dim_multiplier) * d_model
         n_heads = max(1, self.atten_num_heads)
@@ -708,7 +710,7 @@ class VitExitLayers(BasePraxisLayer):
     output_dim: int = 0
     pooled: bool = True
     pre_ln: bool = True
-    output_fc_tanh: bool = False
+    output_fc_tanh: bool = True
     pooling_tpl: LayerTpl = None
     ln_tpl: LayerTpl = None
     output_dropout_prob: float = 0.0
@@ -802,7 +804,7 @@ class VisionTransformer(BasePraxisLayer):
     entry_layers_tpl: LayerTpl = None
     transformer_layers_tpl: LayerTpl = None
     exit_layers_tpl: LayerTpl = None
-    full_data_parallel_on_entry_exit: bool = True
+    full_data_parallel_on_entry_exit: bool = False
 
     def __call__(
         self,
@@ -859,7 +861,7 @@ class ClassificationModel(BasePraxisLayer):
     network_tpl: LayerTpl = None
     softmax_tpl: LayerTpl = None
     input_field: str = "image"
-    label_field: str = "label"
+    label_field: str = "label_probs"
     label_smoothing_prob: float = 0.0
 
     def __call__(

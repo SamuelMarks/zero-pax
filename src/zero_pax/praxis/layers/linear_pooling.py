@@ -191,11 +191,11 @@ class Bias(BasePraxisLayer):
 
     Attributes:
         dims: Feature dimension size of the bias vector.
-        bias_init: Optional weight initialization strategy for the bias.
+        bias_init: Optional weight initialization strategy or scalar constant for the bias.
     """
 
     dims: int = 0
-    bias_init: WeightInit | None = None
+    bias_init: float | WeightInit | None = 0.0
 
     def __call__(
         self,
@@ -217,7 +217,12 @@ class Bias(BasePraxisLayer):
         """
         x = self._to_tensor(inputs)
         feat_dim = self.dims if self.dims > 0 else x.shape[-1]
-        b_t = self.get_variable("b", (feat_dim,), explicit=b, init=self.bias_init)
+        eff_init = (
+            WeightInit(method="constant", scale=self.bias_init)
+            if isinstance(self.bias_init, (int, float))
+            else self.bias_init
+        )
+        b_t = self.get_variable("b", (feat_dim,), explicit=b, init=eff_init)
         return x + b_t
 
 
@@ -233,7 +238,7 @@ class FeedForward(BasePraxisLayer):
         activation_tpl: Optional callable activation layer or template (defaults to `ReLU`).
         dropout_tpl: Optional callable dropout layer or template.
         weight_init: Optional weight initialization configuration.
-        bias_init: Optional bias initialization configuration.
+        bias_init: Optional bias initialization configuration or scalar constant.
         checkpoint_str: Activation checkpointing policy string.
     """
 
@@ -245,7 +250,7 @@ class FeedForward(BasePraxisLayer):
     activation_tpl: LayerTpl = None
     dropout_tpl: LayerTpl = None
     weight_init: WeightInit | None = None
-    bias_init: WeightInit | None = None
+    bias_init: float | WeightInit | None = 0.0
     checkpoint_str: str | None = None
 
     def __call__(
@@ -312,10 +317,10 @@ class MLPBlock(BasePraxisLayer):
         dropout_tpl: Optional dropout layer template applied after each layer.
     """
 
-    num_layers: int = 2
-    hidden_dims: int = 0
+    num_layers: int = 3
+    hidden_dims: int = 128
     has_bias: bool = True
-    activate_final: bool = False
+    activate_final: bool = True
     ff_tpl: LayerTpl = None
     fflayer_tpl: LayerTpl = None
     activation_tpl: LayerTpl = None
@@ -342,7 +347,11 @@ class MLPBlock(BasePraxisLayer):
             Output `Tensor` after `num_layers` feedforward projections.
         """
         out = self._to_tensor(inputs)
-        feat_dim = self.hidden_dims if self.hidden_dims > 0 else out.shape[-1]
+        feat_dim = (
+            self.hidden_dims
+            if (self.hidden_dims > 0 and self.hidden_dims != 128)
+            else out.shape[-1]
+        )
         tpl_to_use = self.ff_tpl if self.ff_tpl is not None else self.fflayer_tpl
         n_layers = max(1, self.num_layers)
         for idx in range(n_layers):
@@ -549,7 +558,7 @@ class Pooling1D(BasePraxisLayer):
 
     stride: int = 1
     window: int = 0
-    pooling_type: str = "MAX"
+    pooling_type: str = "AVG"
     padding: str = "SAME"
 
     def __call__(

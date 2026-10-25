@@ -26,10 +26,10 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ruff pytest pytest-cov mypy interrogate build numpy pydantic
+        pip install ruff pytest pytest-cov mypy interrogate build pydantic
         pip install "cdd @ git+https://github.com/offscale/cdd-python.git@master"
         pip install -r requirements.txt
-        pip install --no-deps "ml-ecosystem-snapshots @ https://github.com/SamuelMarks/ml-ecosystem-snapshots/releases/download/v0.0.4/ml_ecosystem_snapshots-0.0.4-py3-none-any.whl"
+        pip install --no-deps "ml-ecosystem-snapshots @ https://github.com/SamuelMarks/ml-ecosystem-snapshots/releases/download/v0.0.5/ml_ecosystem_snapshots-0.0.5-py3-none-any.whl"
         pip install -e .
 
     - name: Check Code Formatting (Ruff)

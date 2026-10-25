@@ -8,6 +8,82 @@ from enum import Enum
 from pydantic import BaseModel
 
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl
+from zero_pax.praxis.layers import (
+    activations,
+    architectures,
+    attentions,
+    convolutions,
+    embeddings,
+    enums,
+    linear_pooling,
+    normalizations,
+    quantization_utils,
+    recurrent_ssm,
+    transformers,
+)
+from zero_pax.praxis.layers import (
+    architectures as conformers,
+)
+from zero_pax.praxis.layers import (
+    architectures as models,
+)
+from zero_pax.praxis.layers import (
+    architectures as resnets,
+)
+from zero_pax.praxis.layers import (
+    architectures as vanillanets,
+)
+from zero_pax.praxis.layers import (
+    architectures as vits,
+)
+from zero_pax.praxis.layers import (
+    attentions as multi_query_attention,
+)
+from zero_pax.praxis.layers import (
+    embeddings as embedding_softmax,
+)
+from zero_pax.praxis.layers import (
+    linear_pooling as base_ops,
+)
+from zero_pax.praxis.layers import (
+    linear_pooling as linears,
+)
+from zero_pax.praxis.layers import (
+    linear_pooling as poolings,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as adapters,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as augmentations,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as ngrammer,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as pipeline,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as quantization,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as repeats,
+)
+from zero_pax.praxis.layers import (
+    quantization_utils as stochastics,
+)
+from zero_pax.praxis.layers import (
+    recurrent_ssm as frnn,
+)
+from zero_pax.praxis.layers import (
+    recurrent_ssm as rnn_cell,
+)
+from zero_pax.praxis.layers import (
+    recurrent_ssm as ssm,
+)
+from zero_pax.praxis.layers import (
+    transformers as transformer_models,
+)
 from zero_pax.praxis.layers.activations import (
     ELU,
     GELU,
@@ -397,6 +473,38 @@ __all__ = [
     "VitExitLayers",
     "WeightInit",
     "WeightSharding",
+    "activations",
+    "adapters",
+    "architectures",
+    "attentions",
+    "augmentations",
+    "base_ops",
+    "conformers",
+    "convolutions",
+    "embedding_softmax",
+    "embeddings",
+    "enums",
+    "frnn",
+    "linear_pooling",
+    "linears",
+    "models",
+    "multi_query_attention",
+    "ngrammer",
+    "normalizations",
+    "pipeline",
+    "poolings",
+    "quantization",
+    "quantization_utils",
+    "recurrent_ssm",
+    "repeats",
+    "resnets",
+    "rnn_cell",
+    "ssm",
+    "stochastics",
+    "transformer_models",
+    "transformers",
+    "vanillanets",
+    "vits",
 ]
 
 EXPORTED_NAMES: frozenset[str] = frozenset(name.strip() for name in __all__)

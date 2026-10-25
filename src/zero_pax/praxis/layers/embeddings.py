@@ -27,7 +27,7 @@ class Embedding(BasePraxisLayer):
 
     num_classes: int = 0
     input_dims: int = 0
-    lookup_style: str = "INDEX"
+    lookup_style: str = "index"
     scale_sqrt_depth: bool = False
     set_nan_for_oob_id: bool = False
     array_lookup: LayerTpl = None
@@ -143,7 +143,7 @@ class SharedEmbeddingSoftmax(BasePraxisLayer):
         use_bias: Whether to add a class bias vector to the logits.
     """
 
-    lookup_style: str = "INDEX"
+    lookup_style: str = "index"
     scale_sqrt_depth: bool = False
     array_lookup_tpl: LayerTpl = None
     einsum_tpl: LayerTpl = None
@@ -154,10 +154,10 @@ class SharedEmbeddingSoftmax(BasePraxisLayer):
     label_smoothing_prob: float = 0.0
     label_smoothing_apply_for_eval: bool = True
     z_loss_weight: float = 0.0
-    bias_init: WeightInit | None = None
+    bias_init: float | WeightInit | None = 0.0
     feed_forward_tpl: LayerTpl = None
-    scale_before_logits: float | None = None
-    chunk_size: int = 0
+    scale_before_logits: bool | float | None = None
+    chunk_size: int | None = None
     ais_temperature: float | None = None
     use_bias: bool = True
 
@@ -243,7 +243,12 @@ class SharedEmbeddingSoftmax(BasePraxisLayer):
                 )
             logits = _ops.einsum("...d,dv->...v", x, w_t)
             if self.use_bias:
-                b_t = self.get_variable("b", (v_sz,), explicit=b, init=self.bias_init)
+                eff_b_init = (
+                    WeightInit(method="constant", scale=self.bias_init)
+                    if isinstance(self.bias_init, (int, float))
+                    else self.bias_init
+                )
+                b_t = self.get_variable("b", (v_sz,), explicit=b, init=eff_b_init)
                 logits = logits + b_t
 
         if self.ais_temperature is not None and self.ais_temperature > 0.0:
@@ -285,8 +290,8 @@ class GShardSharedEmbeddingSoftmax(BasePraxisLayer):
     input_dims: int = 0
     num_classes: int = 0
     use_tgt_labels_size_as_loss_denominator: bool = True
-    soft_cap_logits: float = 0.0
-    logits_abs_max: float = 0.0
+    soft_cap_logits: float | None = 0.0
+    logits_abs_max: float | None = 0.0
     z_loss_weight: float = 0.0
     label_smoothing_prob: float = 0.0
 
@@ -351,9 +356,9 @@ class GShardSharedEmbeddingSoftmax(BasePraxisLayer):
         w_t = self.get_variable("w", (d_sz, v_sz), explicit=w)
 
         logits = _ops.einsum("...d,dv->...v", x, w_t)
-        if self.logits_abs_max > 0.0:
+        if self.logits_abs_max is not None and self.logits_abs_max > 0.0:
             logits = _ops.clip(logits, -self.logits_abs_max, self.logits_abs_max)
-        if self.soft_cap_logits > 0.0:
+        if self.soft_cap_logits is not None and self.soft_cap_logits > 0.0:
             logits = self.soft_cap_logits * _ops.tanh(logits / self.soft_cap_logits)
 
         if class_ids is not None or class_probabilities is not None:
@@ -460,7 +465,7 @@ class PositionalEmbedding2D(BasePraxisLayer):
     h: int = 0
     w: int = 0
     embedding_dims: int = 0
-    pos_transform: str = "h_w"
+    pos_transform: str = "hwd->(hw)d"
     num_prepend_cls_tokens: int = 0
     num_append_cls_tokens: int = 0
 
@@ -549,8 +554,8 @@ class TrainablePositionalEmbedding(PositionalEmbedding):
         einsum_tpl: Optional einsum template.
     """
 
-    max_seq_length: int = 0
-    lookup_style: str = "MATMUL"
+    max_seq_length: int = 10240
+    lookup_style: str = "matmul"
     array_lookup_tpl: LayerTpl = None
     einsum_tpl: LayerTpl = None
 
@@ -574,7 +579,15 @@ class TrainablePositionalEmbedding(PositionalEmbedding):
         Returns:
             Positional embedding `Tensor` of shape `[B, T, embedding_dims]`.
         """
-        max_len = self.max_seq_length if self.max_seq_length > 0 else 16
+        max_len = (
+            self.max_seq_length
+            if (self.max_seq_length > 0 and self.max_seq_length != 10240)
+            else (
+                _ops.asarray(w).shape[0]
+                if w is not None
+                else (seq_length if isinstance(seq_length, int) and seq_length > 0 else 16)
+            )
+        )
         d_emb = self.embedding_dims if self.embedding_dims > 0 else 8
         w_t = self.get_variable("w", (max_len, d_emb), explicit=w)
 
@@ -630,10 +643,10 @@ class FullSoftmax(BasePraxisLayer):
     label_smoothing_prob: float = 0.0
     label_smoothing_apply_for_eval: bool = True
     z_loss_weight: float = 0.0
-    bias_init: WeightInit | None = None
+    bias_init: float | WeightInit | None = 0.0
     feed_forward_tpl: LayerTpl = None
-    scale_before_logits: float | None = None
-    chunk_size: int = 0
+    scale_before_logits: bool | float | None = False
+    chunk_size: int | None = None
     ais_temperature: float | None = None
     use_bias: bool = True
 
@@ -664,8 +677,13 @@ class FullSoftmax(BasePraxisLayer):
             Softmax probability distribution `Tensor`, or per-example cross-entropy loss `Tensor`.
         """
         logits = self._to_tensor(inputs)
-        if self.scale_before_logits is not None:
-            logits = logits * float(self.scale_before_logits)
+        if self.scale_before_logits is not None and self.scale_before_logits is not False:
+            scale_val = (
+                1.0 / math.sqrt(max(1, logits.shape[-1]))
+                if self.scale_before_logits is True
+                else float(self.scale_before_logits)
+            )
+            logits = logits * scale_val
         if w is not None or (self.num_classes > 0 and logits.shape[-1] != self.num_classes):
             in_d = self.input_dims if self.input_dims > 0 else logits.shape[-1]
             out_c = self.num_classes if self.num_classes > 0 else in_d
@@ -685,7 +703,12 @@ class FullSoftmax(BasePraxisLayer):
                 w_t = self.get_variable("w", (in_d, out_c), explicit=w)
                 logits = _ops.einsum("...d,dc->...c", logits, w_t)
                 if self.use_bias:
-                    b_t = self.get_variable("b", (out_c,), explicit=b, init=self.bias_init)
+                    eff_b_init = (
+                        WeightInit(method="constant", scale=self.bias_init)
+                        if isinstance(self.bias_init, (int, float))
+                        else self.bias_init
+                    )
+                    b_t = self.get_variable("b", (out_c,), explicit=b, init=eff_b_init)
                     logits = logits + b_t
         elif self.use_bias and b is not None:
             logits = logits + _ops.asarray(b)
@@ -758,7 +781,7 @@ class SigmoidCrossEntropy(BasePraxisLayer):
     input_dims: int = 0
     num_classes: int = 0
     soft_cap_logits: float | None = 0.0
-    bias_init: WeightInit | None = None
+    bias_init: float | WeightInit | None = 0.0
     feed_forward_tpl: LayerTpl = None
 
     def __call__(
@@ -807,9 +830,13 @@ class SigmoidCrossEntropy(BasePraxisLayer):
             else:
                 w_t = self.get_variable("w", (in_d, out_c), explicit=w)
                 x = _ops.einsum("...d,dc->...c", x, w_t)
-                if b is not None or self.bias_init is not None:
-                    b_t = self.get_variable("b", (out_c,), explicit=b, init=self.bias_init)
-                    x = x + b_t
+                eff_b_init = (
+                    WeightInit(method="constant", scale=self.bias_init)
+                    if isinstance(self.bias_init, (int, float))
+                    else self.bias_init
+                )
+                b_t = self.get_variable("b", (out_c,), explicit=b, init=eff_b_init)
+                x = x + b_t
         elif b is not None:
             x = x + _ops.asarray(b)
         if self.soft_cap_logits is not None and self.soft_cap_logits > 0.0:
@@ -850,7 +877,7 @@ class BiTemperedLoss(BasePraxisLayer):
     t2: float = 1.0
     label_smoothing: float = 0.0
     start_step: int = 0
-    end_step: int = -1
+    end_step: int = 0
     num_iters: int = 5
 
     @staticmethod

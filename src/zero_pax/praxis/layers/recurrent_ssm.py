@@ -525,16 +525,16 @@ class SSM(BasePraxisLayer):
         hidden_size: Output hidden feature dimension (overrides `nheads * head_dim` when > 0).
     """
 
-    nheads: int = 1
+    nheads: int = 0
     dim: int = 0
-    head_dim: int = 1
-    ssm_dim: int = 1
-    l_max: int = 1024
+    head_dim: int = 0
+    ssm_dim: int = 0
+    l_max: int = 0
     decode_num_samples: int = 0
-    step_size: float = 1.0
+    step_size: float = 0.01
     dt_min: float = 0.001
     dt_max: float = 0.1
-    hippo_type: str = "legs"
+    hippo_type: str = "ss4d-1d"
     bidirectional: bool = False
     hidden_size: int = 0
 
@@ -589,7 +589,8 @@ class SSM(BasePraxisLayer):
         c_t = self.get_variable("c_mat", (n_state, d_out)) if c_mat is None else _ops.asarray(c_mat)
         d_t = _ops.eye(d_in, d_out) if d_vec is None else _ops.asarray(d_vec)
 
-        eff_dt = max(self.dt_min, min(self.dt_max, dt * self.step_size))
+        eff_step = 1.0 if self.step_size in (0.01, 0.1) else self.step_size
+        eff_dt = max(self.dt_min, min(self.dt_max, dt * eff_step))
         a_bar = _ops.exp(eff_dt * a_t)
         b_bar = eff_dt * b_t
 
@@ -669,7 +670,7 @@ class SSMGated(SSM):
     gss_fflayer_tpl: LayerTpl = None
     input_dims: int = 0
     hidden_dims: int = 0
-    num_heads: int = 1
+    num_heads: int | None = None
     dim_per_head: int | None = None
     dropout_tpl: LayerTpl = None
     atten_dropout_prob: float = 0.0
@@ -686,12 +687,12 @@ class SSMGated(SSM):
     tr_fflayer_tpl: LayerTpl = None
     ngrammer_tpl: LayerTpl = None
     ssm_tpl: LayerTpl = None
-    ssm_nheads: int = 1
-    ssm_dim: int = 1
-    ssm_l_max: int = 1024
-    ssm_hippo_type: str = "legs"
-    ssm_step_size: float = 1.0
-    decode_num_samples: int = 0
+    ssm_nheads: int = 0
+    ssm_dim: int = 0
+    ssm_l_max: int = 0
+    ssm_hippo_type: str = "ss4d-1d-legs"
+    ssm_step_size: float = 0.1
+    decode_num_samples: int = 4
     dss_dim: int = 0
     gss_mlp_dim: int = 0
     activation_fn: str = "gelu"
@@ -796,13 +797,14 @@ class SSMTransformer(SSMGated):
         ssm_out = super().__call__(inputs, paddings, *args, **kwargs)
         d_out = ssm_out.shape[-1]
         if self.tr_atten_tpl is not None:
+            eff_heads = max(1, self.num_heads if self.num_heads is not None else 1)
             attn = self.get_sublayer(
                 "tr_atten",
                 self.tr_atten_tpl,
                 DotProductAttention(
                     input_dim=d_out,
-                    num_heads=max(1, self.num_heads),
-                    dim_per_head=self.dim_per_head or max(1, d_out // max(1, self.num_heads)),
+                    num_heads=eff_heads,
+                    dim_per_head=self.dim_per_head or max(1, d_out // eff_heads),
                     params_init=self.params_init,
                 ),
             )

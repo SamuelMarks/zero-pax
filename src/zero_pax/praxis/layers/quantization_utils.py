@@ -46,10 +46,10 @@ class VectorQuantization(BasePraxisLayer):
         normalize_latent_vector: Alias for `prenormalize`.
     """
 
-    num_clusters: int = 1
-    num_heads: int = 1
-    dim_per_head: int = 1
-    decay: float = 0.99
+    num_clusters: int = 0
+    num_heads: int = 0
+    dim_per_head: int = 0
+    decay: float = 0.999
     epsilon: float = 1e-6
     prenormalize: bool = False
     normalize_latent_vector: bool = False
@@ -123,13 +123,13 @@ class VectorQuantizer(BasePraxisLayer):
         EmptyCluster: Handling mode for empty clusters.
     """
 
-    latent_dim: int = 1
-    num_latent_classes: int = 1
-    beta: float = 0.25
+    latent_dim: int | None = None
+    num_latent_classes: int | None = None
+    beta: float | None = None
     num_groups: int = 1
-    normalize_latent_vector: bool = False
-    normalize_codebook: bool = False
-    normalize_latent_per_group: bool = False
+    normalize_latent_vector: bool = True
+    normalize_codebook: bool = True
+    normalize_latent_per_group: bool = True
     empty_cluster_threshold: int = 1
     kmeans_init: bool = False
     EmptyCluster: str | None = None
@@ -153,7 +153,10 @@ class VectorQuantizer(BasePraxisLayer):
             Tuple `(quantized_tensor, nearest_codes, {"loss": weighted_loss})`.
         """
         z = self._to_tensor(inputs)
-        k_cls = max(1, self.num_latent_classes)
+        k_cls = max(
+            1,
+            self.num_latent_classes if self.num_latent_classes is not None else 1,
+        )
         d_dim = z.shape[-1]
 
         cb: Tensor | None
@@ -174,13 +177,17 @@ class VectorQuantizer(BasePraxisLayer):
 
         vq = VectorQuantization(
             num_clusters=k_cls,
-            dim_per_head=max(1, self.latent_dim if self.latent_dim > 0 else d_dim),
+            dim_per_head=max(
+                1,
+                self.latent_dim if (self.latent_dim is not None and self.latent_dim > 0) else d_dim,
+            ),
             parent=self,
             name="vq",
         )
         q, c, info = vq(z_in, codebook=cb)
         raw_loss = info["loss"]
-        scaled_loss = raw_loss * (self.beta / 0.25)
+        beta_val = self.beta if self.beta is not None else 0.25
+        scaled_loss = raw_loss * (beta_val / 0.25)
         return q, c, {"loss": scaled_loss}
 
 
@@ -206,18 +213,18 @@ class RandomVectorQuantizer(BasePraxisLayer):
     """
 
     latent_dim: int | None = None
-    projection_dim: int | None = None
+    projection_dim: int | None = 16
     num_latent_classes: int | None = None
     num_groups: int = 1
     stack_ratio: int = 1
     codebook_init: WeightInit | None = None
     low_rank_codebook: bool = False
     plot_codebook: bool = False
-    normalize_latent_vector: bool = True
-    normalize_codebook: bool = True
-    normalize_latent_per_group: bool = False
+    normalize_latent_vector: bool = False
+    normalize_codebook: bool = False
+    normalize_latent_per_group: bool = True
     aggregation_type: str = "concat"
-    random_seed: int | None = 1234
+    random_seed: int | None = None
     quantizer_tpl: LayerTpl = None
     stacking_tpl: LayerTpl = None
 
@@ -255,9 +262,21 @@ class RandomVectorQuantizer(BasePraxisLayer):
 
         in_d = z.shape[-1]
         proj_d = (
-            self.projection_dim
-            if (self.projection_dim is not None and self.projection_dim > 0)
-            else in_d
+            _ops.asarray(proj_w).shape[-1]
+            if proj_w is not None
+            else (
+                _ops.asarray(codebook).shape[-1]
+                if codebook is not None
+                else (
+                    self.projection_dim
+                    if (
+                        self.projection_dim is not None
+                        and self.projection_dim > 0
+                        and self.projection_dim != 16
+                    )
+                    else in_d
+                )
+            )
         )
         num_c = (
             self.num_latent_classes
@@ -310,13 +329,13 @@ class Ngrammer(BasePraxisLayer):
     """
 
     ngram_using_attention_scores: bool = False
-    ngram_vocab_size: int = 768
+    ngram_vocab_size: int = 196608
     unigram_vocab_size: int = 0
     ngram_emb_dim: int = 8
-    num_heads: int = 1
+    num_heads: int = 0
     concat_ngrams: bool = True
     emb_layer_tpl: LayerTpl = None
-    dim_per_head: int = 1
+    dim_per_head: int = 0
     ln_tpl: LayerTpl = None
     weight_sharing: bool = False
 
@@ -399,18 +418,18 @@ class VQNgrammer(Ngrammer):
 
     ngram_using_attention_scores: bool = False
     causal_attention: bool = True
-    ngram_vocab_size: int = 768
+    ngram_vocab_size: int = 768 * 256
     ngram_emb_dim: int = 8
-    num_clusters: int = 1
-    num_heads: int = 1
-    concat_ngrams: bool = True
-    decay: float = 0.99
+    num_clusters: int = 0
+    num_heads: int = 0
+    concat_ngrams: bool = False
+    decay: float = 0.999
     epsilon: float = 1e-6
     use_cached_input_ids_to_cluster_ids: bool = False
-    enable_cache_updates: bool = False
-    full_update_cache_frequency: int = 500
+    enable_cache_updates: bool = True
+    full_update_cache_frequency: int = 0
     full_update_cache_steps: int = 0
-    dim_per_head: int = 1
+    dim_per_head: int = 0
     vq_layer_tpl: LayerTpl = None
     ngram_layer_tpl: LayerTpl = None
     prenormalize: bool = False
@@ -496,20 +515,20 @@ class BregmanPCA(BasePraxisLayer):
         epsilon: Small constant for numerical stability.
     """
 
-    num_components: int = 1
-    input_dims: int = 1
+    num_components: int = 0
+    input_dims: int | Sequence[int] = 0
     activation_type: ActivationType = "NONE"
     negative_slope: float = 0.0
     mean_beta: float = 0.99
     coefficients_lr: float = 0.01
-    coefficients_beta: float = 0.0
-    coefficients_steps: int = 10
-    components_lr: float = 0.001
-    components_beta: float = 0.001
+    coefficients_beta: float = 0.9
+    coefficients_steps: int = 20
+    components_lr: float = 0.01
+    components_beta: float = 0.9
     start_step: int = 0
-    end_step: int = -1
+    end_step: int = 0
     constant_lr_schedule: bool = True
-    is_training: bool = False
+    is_training: bool = True
     use_bias: bool = True
     learnable_Coef: bool = True
     learnable_Component: bool = True
@@ -592,7 +611,7 @@ class Dropout(BasePraxisLayer):
     noise_shape: Sequence[int] | None = None
     noise_shape_broadcast_dims: Sequence[int] | None = None
     dropout_at_eval: bool = False
-    transpose_qk: bool = False
+    transpose_qk: bool | None = False
 
     def __call__(
         self,
@@ -733,8 +752,8 @@ class TemporalShifting(BasePraxisLayer):
         axis: Sequence/time axis index along which to shift.
     """
 
-    shift_range_ms: float = 0.0
-    sample_rate: float = 1000.0
+    shift_range_ms: float | None = 0.0
+    sample_rate: float = 16000.0
     shift: int = 0
     axis: int = 1
 
@@ -755,9 +774,8 @@ class TemporalShifting(BasePraxisLayer):
             Temporally shifted `Tensor` of the same shape as `inputs`.
         """
         x = self._to_tensor(inputs)
-        shift_val = (
-            self.shift if self.shift != 0 else int(self.shift_range_ms * self.sample_rate / 1000.0)
-        )
+        shift_ms = self.shift_range_ms if self.shift_range_ms is not None else 0.0
+        shift_val = self.shift if self.shift != 0 else int(shift_ms * self.sample_rate / 1000.0)
         if shift_val <= 0 or x.ndim < 2:
             return x
         ax = self.axis if self.axis >= 0 else x.ndim + self.axis
@@ -789,7 +807,7 @@ class StackingOverTime(BasePraxisLayer):
 
     left_context: int = 0
     right_context: int = 0
-    stride: int = 1
+    stride: int = 0
     pad_with_left_frame: bool = False
     pad_with_right_frame: bool = False
     padding_reduce_option: str = "reduce_min"
@@ -876,10 +894,10 @@ class MaskedLmDataAugmenter(BasePraxisLayer):
     """
 
     vocab_size: int = 0
-    mask_prob: float = 0.15
-    random_prob: float = 0.1
-    same_prob: float = 0.1
-    mask_token_id: int = 0
+    mask_prob: float = 0.12
+    random_prob: float = 0.015
+    same_prob: float = 0.015
+    mask_token_id: int = -1
 
     def __call__(
         self,
@@ -932,19 +950,19 @@ class SpectrumAugmenter(BasePraxisLayer):
         domain: Spectrogram domain (`'log_mel'`, `'linear'`, etc.).
     """
 
-    freq_mask_max_bins: int = 15
-    freq_mask_count: int = 1
-    time_mask_max_frames: int = 50
-    time_mask_count: int = 1
-    time_mask_max_ratio: float = 1.0
+    freq_mask_max_bins: int = 27
+    freq_mask_count: int = 2
+    time_mask_max_frames: int = 40
+    time_mask_count: int = 10
+    time_mask_max_ratio: float = 0.05
     time_masks_per_frame: float = 0.0
-    use_dynamic_time_mask_max_frames: bool = False
+    use_dynamic_time_mask_max_frames: bool = True
     augment_at_eval: bool = False
     use_noise: bool = False
     gaussian_noise: bool = False
     unstack: bool = False
-    stack_height: int = 1
-    domain: str = "log_mel"
+    stack_height: int = 3
+    domain: str = "freq"
 
     def __call__(
         self,
@@ -1049,10 +1067,10 @@ class Repeat(BasePraxisLayer):
 
     sub_tpl: LayerTpl = None
     x_times: int = 0
-    unroll_in_decode: bool = True
+    unroll_in_decode: bool = False
     checkpoint_policy: str = "save_nothing"
     unpack_summaries: bool = False
-    sublayer_name: str | None = None
+    sublayer_name: str | None = "sub"
     optimizer_dims_mapping: SplitDimsMapping = None
     collect_intermediate_outputs: bool = False
     return_intermediate_outputs: bool = False
@@ -1114,7 +1132,7 @@ class LayerwiseShardablePipelined(BasePraxisLayer):
     single_stage_body: LayerTpl = None
     num_microbatches: int | None = None
     microbatch_size: int | None = None
-    unpack_summaries: bool = False
+    unpack_summaries: bool = True
     CircularRepeat: int = 1
     circular_repeat: int = 1
     stream_io: bool = False

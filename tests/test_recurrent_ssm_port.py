@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
-
+from tests import conftest as np
 from zero_pax.praxis.layers import (
     SSM,
     CifgLstmCellSimple,

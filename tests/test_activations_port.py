@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import jax
-import numpy as np
+import math
 
+from tests import conftest as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.layers import (
     ELU,
     GELU,
@@ -33,80 +34,81 @@ def test_base_and_identity_activation() -> None:
 
 
 def test_relu() -> None:
-    """Verify `ReLU` matches `jax.nn.relu`."""
+    """Verify `ReLU` matches analytical `max(0, x)`."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.nn.relu(inputs)
+    ref_out = np.maximum(0.0, inputs)
     zero_out = ReLU()(inputs)
-    np.testing.assert_allclose(zero_out, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out, ref_out, atol=1e-5)
 
 
 def test_gelu() -> None:
-    """Verify `GELU` matches `jax.nn.gelu` for both approximate and exact modes."""
+    """Verify `GELU` matches analytical approximate and exact formulas."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_approx = jax.nn.gelu(inputs, approximate=True)
+    c = math.sqrt(2.0 / math.pi)
+    ref_approx = 0.5 * inputs * (1.0 + np.tanh(c * (inputs + 0.044715 * (inputs**3))))
     zero_approx = GELU(approximate=True)(inputs)
-    np.testing.assert_allclose(zero_approx, np.array(jax_approx), atol=1e-5)
+    np.testing.assert_allclose(zero_approx, ref_approx, atol=1e-5)
 
-    jax_exact = jax.nn.gelu(inputs, approximate=False)
+    ref_exact = 0.5 * inputs * (1.0 + _ops.erf(inputs / math.sqrt(2.0)))
     zero_exact = GELU(approximate=False)(inputs)
-    np.testing.assert_allclose(zero_exact, np.array(jax_exact), atol=1e-5)
+    np.testing.assert_allclose(zero_exact, ref_exact, atol=1e-5)
 
 
 def test_swish_silu() -> None:
-    """Verify `Swish` and `SiLU` match `jax.nn.swish` and `jax.nn.silu`."""
+    """Verify `Swish` and `SiLU` match analytical `x / (1 + exp(-x))`."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.nn.swish(inputs)
+    ref_out = inputs / (1.0 + np.exp(-inputs))
     zero_out_swish = Swish()(inputs)
     zero_out_silu = SiLU()(inputs)
-    np.testing.assert_allclose(zero_out_swish, np.array(jax_out), atol=1e-5)
-    np.testing.assert_allclose(zero_out_silu, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out_swish, ref_out, atol=1e-5)
+    np.testing.assert_allclose(zero_out_silu, ref_out, atol=1e-5)
 
 
 def test_leaky_relu() -> None:
-    """Verify `LeakyReLU` matches `jax.nn.leaky_relu`."""
+    """Verify `LeakyReLU` matches analytical piecewise linear formula."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.nn.leaky_relu(inputs, negative_slope=0.2)
+    ref_out = _ops.where(inputs > 0.0, inputs, 0.2 * inputs)
     zero_out = LeakyReLU(negative_slope=0.2)(inputs)
-    np.testing.assert_allclose(zero_out, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out, ref_out, atol=1e-5)
 
 
 def test_sigmoid() -> None:
-    """Verify `Sigmoid` matches `jax.nn.sigmoid`."""
+    """Verify `Sigmoid` matches analytical `1 / (1 + exp(-x))`."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.nn.sigmoid(inputs)
+    ref_out = 1.0 / (1.0 + np.exp(-inputs))
     zero_out = Sigmoid()(inputs)
-    np.testing.assert_allclose(zero_out, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out, ref_out, atol=1e-5)
 
 
 def test_tanh() -> None:
-    """Verify `Tanh` matches `jax.numpy.tanh`."""
+    """Verify `Tanh` matches analytical `tanh(x)`."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.numpy.tanh(inputs)
+    ref_out = np.tanh(inputs)
     zero_out = Tanh()(inputs)
-    np.testing.assert_allclose(zero_out, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out, ref_out, atol=1e-5)
 
 
 def test_elu() -> None:
-    """Verify `ELU` matches `jax.nn.elu`."""
+    """Verify `ELU` matches analytical `where(x > 0, x, alpha * (exp(x) - 1))`."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.nn.elu(inputs, alpha=1.5)
+    ref_out = _ops.where(inputs > 0.0, inputs, 1.5 * (np.exp(inputs) - 1.0))
     zero_out = ELU(alpha=1.5)(inputs)
-    np.testing.assert_allclose(zero_out, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out, ref_out, atol=1e-5)
 
 
 def test_cubed_squared_relu() -> None:
     """Verify `CubedReLU` and `SquaredReLU` match power-of-ReLU formulas."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_relu = jax.nn.relu(inputs)
+    ref_relu = np.maximum(0.0, inputs)
     zero_sq = SquaredReLU()(inputs)
     zero_cu = CubedReLU()(inputs)
-    np.testing.assert_allclose(zero_sq, np.array(jax_relu**2), atol=1e-5)
-    np.testing.assert_allclose(zero_cu, np.array(jax_relu**3), atol=1e-5)
+    np.testing.assert_allclose(zero_sq, ref_relu**2, atol=1e-5)
+    np.testing.assert_allclose(zero_cu, ref_relu**3, atol=1e-5)
 
 
 def test_relu6() -> None:
-    """Verify `ReLU6` matches `jax.nn.relu6`."""
+    """Verify `ReLU6` matches analytical `min(max(0, x), 6)`."""
     inputs = np.random.normal(size=(2, 4)).astype(np.float32)
-    jax_out = jax.nn.relu6(inputs)
+    ref_out = np.minimum(np.maximum(0.0, inputs), 6.0)
     zero_out = ReLU6()(inputs)
-    np.testing.assert_allclose(zero_out, np.array(jax_out), atol=1e-5)
+    np.testing.assert_allclose(zero_out, ref_out, atol=1e-5)

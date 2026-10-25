@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl
 from zero_pax.praxis.layers.activations import Identity, ReLU, Swish
@@ -34,7 +36,7 @@ class Conv2D(BasePraxisLayer):
     """
 
     filter_shape: tuple[int, int, int, int] = (0, 0, 0, 0)
-    filter_stride: tuple[int, int] = (1, 1)
+    filter_stride: tuple[int, int] = (0, 0)
     dilations: tuple[int, int] = (1, 1)
     bias: bool = False
     bias_init: WeightInit | None = None
@@ -378,12 +380,12 @@ class CausalDepthwiseConv1D(DepthwiseConv1D):
 
     Attributes:
         kernel_size: 1D convolution kernel size (overrides `filter_shape[0]` when > 0).
-        hidden_dims: Channel dimension size (overrides `filter_shape[1]` when > 0).
+        hidden_dims: Channel dimension size or sequence (overrides `filter_shape[1]` when > 0).
         is_causal: Whether causal left-only padding is enforced (`True` by default).
     """
 
-    kernel_size: int = 0
-    hidden_dims: int = 0
+    kernel_size: int = 3
+    hidden_dims: int | Sequence[int] = 0
     is_causal: bool = True
 
     def _resolve_kernel_size(self) -> int:
@@ -392,9 +394,9 @@ class CausalDepthwiseConv1D(DepthwiseConv1D):
         Returns:
             Positive integer kernel size.
         """
-        if self.kernel_size > 0:
-            return self.kernel_size
-        return super()._resolve_kernel_size()
+        if self.filter_shape[0] > 0:
+            return self.filter_shape[0]
+        return self.kernel_size if self.kernel_size > 0 else super()._resolve_kernel_size()
 
 
 class LightConv1D(BasePraxisLayer):
@@ -417,8 +419,8 @@ class LightConv1D(BasePraxisLayer):
         use_2d_conv_norm: Whether to apply 2D-style normalization after convolution.
     """
 
-    input_dims: int = 0
-    kernel_size: int = 3
+    input_dims: int | None = None
+    kernel_size: int | None = None
     conv_activation_tpl: LayerTpl = None
     dropout_prob: float = 0.0
     ln_tpl: LayerTpl = None
@@ -463,8 +465,12 @@ class LightConv1D(BasePraxisLayer):
             Convolved 3D `Tensor` of shape `[B, T, D]`.
         """
         x = self._to_tensor(inputs)
-        d_model = self.input_dims if self.input_dims > 0 else x.shape[-1]
-        k_sz = self.kernel_size if self.kernel_size > 0 else 3
+        d_model = (
+            self.input_dims
+            if (self.input_dims is not None and self.input_dims > 0)
+            else x.shape[-1]
+        )
+        k_sz = self.kernel_size if (self.kernel_size is not None and self.kernel_size > 0) else 3
 
         ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=d_model))
         normed = ln(x, scale=ln_scale, bias=ln_bias) if isinstance(ln, LayerNorm) else ln(x)

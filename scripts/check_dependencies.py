@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Script to verify that no disallowed third-party dependencies are used in non-test code or requirements."""
+"""Script to verify that no disallowed third-party dependencies are used across src, scripts, tests, or requirements."""
 
 from __future__ import annotations
 
@@ -33,6 +33,26 @@ ALLOWED_THIRD_PARTY: frozenset[str] = frozenset(
     }
 )
 
+ALLOWED_DEV_PACKAGES: frozenset[str] = frozenset(
+    {
+        "pytest",
+        "pytest_cov",
+        "mypy",
+        "interrogate",
+        "ruff",
+        "build",
+    }
+)
+
+FORBIDDEN_SIBLING_FRAMEWORKS: frozenset[str] = frozenset(
+    {
+        "grain",
+        "chex",
+        "orbax",
+        "optax",
+    }
+)
+
 
 def _discover_stdlib_modules() -> frozenset[str]:
     """Build the set of Python standard library top-level module names.
@@ -63,17 +83,22 @@ def _discover_stdlib_modules() -> frozenset[str]:
 STDLIB: frozenset[str] = _discover_stdlib_modules()
 
 
-def is_allowed_module(module_name: str) -> bool:
-    """Check whether a module import is allowed in runtime code.
+def is_allowed_module(module_name: str, is_test: bool = False) -> bool:
+    """Check whether a module import is allowed in runtime or test code.
 
     Args:
         module_name: Dotted module name being imported.
+        is_test: Whether the import occurs inside `tests/`.
 
     Returns:
         True if the top-level module is part of the Python standard library or allowlist.
     """
     top_level = module_name.split(".")[0].replace("-", "_")
-    return top_level in STDLIB or top_level in ALLOWED_THIRD_PARTY
+    if top_level in FORBIDDEN_SIBLING_FRAMEWORKS:
+        return False
+    if top_level in STDLIB or top_level in ALLOWED_THIRD_PARTY:
+        return True
+    return is_test and top_level in ("pytest", "tests", "scripts")
 
 
 def check_file(file_path: Path) -> list[str]:
@@ -86,6 +111,11 @@ def check_file(file_path: Path) -> list[str]:
         A list of human-readable violation strings found in the file.
     """
     errors: list[str] = []
+    is_test = (
+        "test" in file_path.parts
+        or "tests" in file_path.parts
+        or file_path.name.startswith("test_")
+    )
     try:
         source = file_path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(file_path))
@@ -95,10 +125,12 @@ def check_file(file_path: Path) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if not is_allowed_module(alias.name):
+                if not is_allowed_module(alias.name, is_test=is_test):
                     errors.append(f"{file_path}:{node.lineno}: Disallowed import: {alias.name}")
         elif (
-            isinstance(node, ast.ImportFrom) and node.module and not is_allowed_module(node.module)
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and not is_allowed_module(node.module, is_test=is_test)
         ):
             errors.append(f"{file_path}:{node.lineno}: Disallowed import: {node.module}")
         elif (
@@ -108,7 +140,7 @@ def check_file(file_path: Path) -> list[str]:
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
-            and not is_allowed_module(node.args[0].value)
+            and not is_allowed_module(node.args[0].value, is_test=is_test)
         ):
             errors.append(
                 f"{file_path}:{node.lineno}: Disallowed dynamic import: {node.args[0].value}"
@@ -116,11 +148,12 @@ def check_file(file_path: Path) -> list[str]:
     return errors
 
 
-def check_requirements_file(req_path: Path) -> list[str]:
-    """Validate that all runtime dependencies in `req_path` belong to `ALLOWED_THIRD_PARTY`.
+def check_requirements_file(req_path: Path, is_test: bool = False) -> list[str]:
+    """Validate that all dependencies in `req_path` belong to the allowed dependency set.
 
     Args:
-        req_path: Path to `requirements.txt`.
+        req_path: Path to `requirements.txt` or `requirements-test.txt`.
+        is_test: Whether `req_path` is a test/dev requirements file.
 
     Returns:
         List of violation messages for any disallowed dependency specifications.
@@ -135,13 +168,14 @@ def check_requirements_file(req_path: Path) -> list[str]:
         match = re.match(r"^([a-zA-Z0-9_\-]+)", line)
         if match:
             pkg_name = match.group(1).replace("-", "_")
-            if not is_allowed_module(pkg_name):
-                errors.append(f"{req_path}:{idx}: Disallowed runtime dependency: {match.group(1)}")
+            allowed = is_allowed_module(pkg_name) or (is_test and pkg_name in ALLOWED_DEV_PACKAGES)
+            if not allowed:
+                errors.append(f"{req_path}:{idx}: Disallowed dependency: {match.group(1)}")
     return errors
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the disallowed dependency check across `src/`, `scripts/`, and `requirements.txt`.
+    """Run the disallowed dependency check across `src/`, `scripts/`, `tests/`, and requirements files.
 
     Args:
         argv: Optional command-line arguments.
@@ -154,12 +188,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "filenames",
         nargs="*",
         type=Path,
-        help="Files or directories to check (defaults to src/ and scripts/).",
+        help="Files or directories to check (defaults to src/, scripts/, and tests/).",
     )
     args = parser.parse_args(argv)
 
     raw_filenames: list[Path] = list(args.filenames)
-    target_paths: list[Path] = raw_filenames if raw_filenames else [Path("src"), Path("scripts")]
+    target_paths: list[Path] = (
+        raw_filenames if raw_filenames else [Path("src"), Path("scripts"), Path("tests")]
+    )
 
     files_to_check: list[Path] = []
     for p in target_paths:
@@ -170,15 +206,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     all_errors: list[str] = []
     for file_path in files_to_check:
-        if "test" in file_path.parts or "tests" in file_path.parts:
-            continue
         all_errors.extend(check_file(file_path))
 
     if not raw_filenames:
-        all_errors.extend(check_requirements_file(Path("requirements.txt")))
+        all_errors.extend(check_requirements_file(Path("requirements.txt"), is_test=False))
+        all_errors.extend(check_requirements_file(Path("requirements-test.txt"), is_test=True))
 
     if all_errors:
-        print("Disallowed dependencies found in non-test code:")
+        print("Disallowed dependencies found:")
         for error in all_errors:
             print(error)
         return 1

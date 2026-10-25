@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
-
+from tests import conftest as np
 from zero_pax.praxis.layers import (
     AttentionProjection,
     DotProductAttention,
@@ -121,8 +120,9 @@ def test_dot_product_attention_variants() -> None:
         input_dim=8, num_heads=2, dim_per_head=4, left_context=1, right_context=0
     )
     out_ctx_1 = layer_ctx(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
-    inputs_future_changed = inputs.copy()
-    inputs_future_changed[:, 2:, :] += 100.0
+    inputs_future_changed = inputs + np.concatenate(
+        [np.zeros((2, 2, 8)), np.full((2, 2, 8), 100.0)], axis=1
+    )
     out_ctx_2 = layer_ctx(
         inputs_future_changed, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
     )
@@ -143,8 +143,7 @@ def test_dot_product_attention_variants() -> None:
 
     local_blk = LocalSelfAttention(input_dim=8, num_heads=2, dim_per_head=4, block_size=1)
     out_blk1 = local_blk(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
-    inputs_far = inputs.copy()
-    inputs_far[:, 3, :] += 50.0
+    inputs_far = inputs + np.concatenate([np.zeros((2, 3, 8)), np.full((2, 1, 8), 50.0)], axis=1)
     out_blk2 = local_blk(inputs_far, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
     np.testing.assert_allclose(out_blk1[:, 0, :], out_blk2[:, 0, :], atol=1e-5)
 

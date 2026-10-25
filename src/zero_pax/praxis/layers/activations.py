@@ -124,7 +124,7 @@ class LeakyReLU(BaseActivation):
         negative_slope: Slope multiplier for negative inputs.
     """
 
-    negative_slope: float = 0.0
+    negative_slope: float = 0.01
 
     def __call__(
         self,

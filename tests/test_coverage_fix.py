@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
+from tests import conftest as np
 from zero_pax import _tensor_ops as t_ops
 from zero_pax.praxis.base import BasePraxisLayer, instantiate_layer
 from zero_pax.praxis.layers import (
@@ -484,7 +484,9 @@ def test_attentions_and_embeddings_numerical_branches() -> None:
 
 def test_utilities_recurrent_transformers_and_arch_numerical_branches() -> None:
     """Verify numerical edge cases in `quantization_utils.py`, `recurrent_ssm.py`, `transformers.py`, and `architectures.py`."""
-    q_vq, c_vq, _ = VectorQuantizer(num_latent_classes=1)(np.ones((1, 2, 2), dtype=np.float32))
+    q_vq, c_vq, _ = VectorQuantizer(num_latent_classes=1, normalize_latent_vector=False)(
+        np.ones((1, 2, 2), dtype=np.float32)
+    )
     np.testing.assert_allclose(q_vq, np.ones((1, 2, 2)))
     np.testing.assert_allclose(c_vq, np.zeros((1, 2)))
 
@@ -493,6 +495,8 @@ def test_utilities_recurrent_transformers_and_arch_numerical_branches() -> None:
         stacking_tpl=StackingOverTime(stride=2, left_context=1),
         projection_dim=4,
         num_latent_classes=2,
+        normalize_latent_vector=True,
+        normalize_codebook=True,
     )
     q_rvq, c_rvq, _ = rvq(
         np.ones((1, 4, 2), dtype=np.float32),
@@ -805,6 +809,7 @@ def test_utilities_recurrent_transformers_and_arch_numerical_branches() -> None:
         hidden_dim=4,
         output_dim=2,
         pooled=True,
+        output_fc_tanh=False,
         ln_tpl=Identity(),
         pooling_tpl=GlobalPooling(pooling_type="AVG", pooling_dims=[1]),
     )

@@ -502,6 +502,23 @@ class Tensor(_TensorBase):
         """
         return Tensor(self._flat, self._shape, dtype=resolve_dtype(dtype) or self._dtype)
 
+    def copy(self) -> Tensor:
+        """Return a deep copy of the tensor.
+
+        Returns:
+            New `Tensor` with identical flat data, shape, and dtype.
+        """
+        return Tensor(self._flat, self._shape, dtype=self._dtype)
+
+    @property
+    def T(self) -> Tensor:
+        """Return the reversed-axis transpose of the tensor.
+
+        Returns:
+            Transposed `Tensor`.
+        """
+        return transpose(self)
+
     def reshape(self, *newshape: int | Sequence[int]) -> Tensor:
         """Return a tensor with the same data reshaped to `newshape`.
 

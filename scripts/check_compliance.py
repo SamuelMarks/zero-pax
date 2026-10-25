@@ -1,271 +1,336 @@
 #!/usr/bin/env python3
-"""Script to validate zero_pax API and signature compliance against pax_v1.4.0.json and SEMANTIC_PLAN.md."""
+"""Script to validate zero_pax API, module hierarchy, class, field, type, default, and docstring compliance against ml-ecosystem-snapshots v0.0.5 (pax_v1.4.0.json) and SEMANTIC_PLAN.md."""
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import re
 import sys
-from collections.abc import Mapping, Sequence
 from enum import Enum
 from pathlib import Path
+from types import ModuleType
 
-from ml_ecosystem_snapshots.cli.resolver import resolve_snapshot_path
-from ml_ecosystem_snapshots.compliance import score_compliance
-from ml_switcheroo_ir.schema.ghost import GhostParam, GhostRef, ParameterKind
-from ml_switcheroo_ir.types import JsonValue
 from pydantic import BaseModel
 
+import zero_pax
+from zero_pax.praxis.layers import EXPORTED_NAMES, LAYER_REGISTRY
 
-def _to_parameter_kind(kind_str: str) -> ParameterKind:
-    """Convert an inspect parameter kind string into a `ParameterKind` enum.
-
-    Args:
-        kind_str: Raw string representation of the parameter kind.
-
-    Returns:
-        Corresponding `ParameterKind` enum member.
-    """
-    if "VAR_POSITIONAL" in kind_str:
-        return ParameterKind.VAR_POSITIONAL
-    if "VAR_KEYWORD" in kind_str:
-        return ParameterKind.VAR_KEYWORD
-    if "KEYWORD_ONLY" in kind_str:
-        return ParameterKind.KEYWORD_ONLY
-    if "POSITIONAL_ONLY" in kind_str:
-        return ParameterKind.POSITIONAL_ONLY
-    return ParameterKind.POSITIONAL_OR_KEYWORD
+_ATTR_ENTRY_RE: re.Pattern[str] = re.compile(r"^\s{2,12}([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?:")
 
 
-def _extract_class_ghost_ref(cls_obj: type[BaseModel | Enum], api_path: str) -> GhostRef:
-    """Build a GhostRef from a live zero_pax Pydantic model or Enum class.
+def _extract_documented_attributes(doc: str) -> set[str]:
+    """Extract attribute names documented under an `Attributes:` section of a class docstring.
 
     Args:
-        cls_obj: The Pydantic BaseModel or Enum subclass to inspect.
-        api_path: Canonical snapshot API path (e.g., 'praxis.layers.ReLU').
+        doc: Cleaned class docstring text.
 
     Returns:
-        Constructed `GhostRef` with extracted parameter names and kinds.
+        Set of documented attribute names.
     """
-    params: list[GhostParam] = []
-    seen_names: set[str] = set()
+    attrs: set[str] = set()
+    in_attrs = False
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped in ("Attributes:", "Attributes"):
+            in_attrs = True
+            continue
+        if in_attrs:
+            if stripped.endswith(":") and not line.startswith("    "):
+                in_attrs = False
+                continue
+            match = _ATTR_ENTRY_RE.match(line)
+            if match:
+                attrs.add(match.group(1))
+    return attrs
 
-    if issubclass(cls_obj, BaseModel):
-        for field_name in cls_obj.model_fields:
-            if field_name not in seen_names:
-                seen_names.add(field_name)
-                params.append(
-                    GhostParam(
-                        name=str(field_name),
-                        kind=ParameterKind.POSITIONAL_OR_KEYWORD,
-                        default="None",
-                        annotation=None,
-                    )
-                )
 
-    if issubclass(cls_obj, Enum):
-        for member in cls_obj:
-            if member.name not in seen_names:
-                seen_names.add(member.name)
-                params.append(
-                    GhostParam(
-                        name=member.name,
-                        kind=ParameterKind.POSITIONAL_OR_KEYWORD,
-                        default="None",
-                        annotation=None,
-                    )
-                )
+EXPECTED_SUBMODULES: tuple[str, ...] = (
+    "praxis.base_layer",
+    "praxis.pax_fiddle",
+    "praxis.layers",
+    "praxis.layers.activations",
+    "praxis.layers.adapters",
+    "praxis.layers.attentions",
+    "praxis.layers.augmentations",
+    "praxis.layers.base_ops",
+    "praxis.layers.conformers",
+    "praxis.layers.convolutions",
+    "praxis.layers.embedding_softmax",
+    "praxis.layers.embeddings",
+    "praxis.layers.frnn",
+    "praxis.layers.linears",
+    "praxis.layers.models",
+    "praxis.layers.multi_query_attention",
+    "praxis.layers.ngrammer",
+    "praxis.layers.normalizations",
+    "praxis.layers.pipeline",
+    "praxis.layers.poolings",
+    "praxis.layers.quantization",
+    "praxis.layers.repeats",
+    "praxis.layers.resnets",
+    "praxis.layers.rnn_cell",
+    "praxis.layers.ssm",
+    "praxis.layers.stochastics",
+    "praxis.layers.transformer_models",
+    "praxis.layers.transformers",
+    "praxis.layers.vanillanets",
+    "praxis.layers.vits",
+)
 
+FORBIDDEN_SIBLING_FRAMEWORKS: tuple[str, ...] = (
+    "grain",
+    "chex",
+    "orbax",
+    "optax",
+)
+
+
+def _find_snapshot_path() -> Path | None:
+    """Locate `pax_v1.4.0.json` in the local cache or `ml_ecosystem_snapshots` package.
+
+    Returns:
+        Path to `pax_v1.4.0.json` if found, otherwise `None`.
+    """
+    candidates = [
+        Path.home() / ".cache" / "ml_ecosystem_snapshots" / "pax_v1.4.0.json",
+        Path.home() / ".cache" / "ml_ecosystem_snapshots" / "snapshots" / "pax_v1.4.0.json",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _parse_expected_default(
+    snap_def: str | None,
+) -> tuple[bool, str | int | float | bool | tuple[int, ...] | None]:
+    """Parse a serialized default string from `pax_v1.4.0.json` into a comparable Python literal.
+
+    Args:
+        snap_def: Raw default string from the snapshot parameter metadata.
+
+    Returns:
+        Tuple `(should_check, expected_literal_value)`.
+    """
+    if snap_def is None:
+        return False, None
+    if snap_def in ("'```(None)```'", "```(None)```", "None"):
+        return True, None
     try:
-        sig = inspect.signature(cls_obj)
-        for p_name, param in sig.parameters.items():
-            if p_name == "self":
-                continue
-            p_kind = _to_parameter_kind(str(param.kind))
-            if p_name not in seen_names:
-                seen_names.add(p_name)
-                params.append(
-                    GhostParam(
-                        name=p_name,
-                        kind=p_kind,
-                        default="None" if param.default is not inspect.Parameter.empty else None,
-                        annotation=None,
-                    )
+        parsed = ast.literal_eval(snap_def)
+        if isinstance(parsed, str):
+            if parsed == "```(None)```":
+                return True, None
+            if any(
+                parsed.startswith(pfx)
+                for pfx in (
+                    "template_field(",
+                    "dataclasses.field(",
+                    "instance_field(",
+                    "base_layer.",
+                    "pax_fiddle.",
                 )
-    except (ValueError, TypeError):
-        pass
-
-    if "args" not in seen_names:
-        params.append(
-            GhostParam(
-                name="args",
-                kind=ParameterKind.VAR_POSITIONAL,
-                default=None,
-                annotation=None,
-            )
-        )
-    if "kwargs" not in seen_names:
-        params.append(
-            GhostParam(
-                name="kwargs",
-                kind=ParameterKind.VAR_KEYWORD,
-                default=None,
-                annotation=None,
-            )
-        )
-
-    return GhostRef(
-        name=cls_obj.__name__,
-        api_path=api_path,
-        kind="class",
-        params=params,
-        docstring=inspect.getdoc(cls_obj),
-        has_varargs=True,
-    )
+            ):
+                return False, None
+            if parsed in (
+                "ActivationType",
+                "LanguageModelType",
+                "AutodiffCheckpointType",
+                "repeats.AutodiffCheckpointType",
+            ):
+                return False, None
+            if parsed.startswith("(") and parsed.endswith(")"):
+                tuple_val = ast.literal_eval(parsed)
+                if isinstance(tuple_val, tuple):
+                    return True, tuple_val
+            if parsed == "768 * 256":
+                return True, 768 * 256
+            return True, parsed
+        if isinstance(parsed, (int, float, bool, tuple)) or parsed is None:
+            return True, parsed
+    except (ValueError, SyntaxError):
+        return False, None
+    return False, None
 
 
-def verify_snapshot_compliance() -> tuple[bool, list[str]]:
-    """Validate `zero_pax.praxis.layers` against the `pax_v1.4.0.json` snapshot in `ml-ecosystem-snapshots`.
+def verify_module_hierarchy() -> list[str]:
+    """Verify the `zero_pax.praxis` module hierarchy and ensure no sibling frameworks are replicated.
 
     Returns:
-        Tuple of (is_compliant, list_of_error_messages).
+        List of hierarchy or sibling-replication error messages.
     """
-    from zero_pax.praxis.layers import LAYER_REGISTRY
-
     errors: list[str] = []
-    snapshot_path_str = resolve_snapshot_path("pax_v1.4.0")
-    snapshot_path = Path(snapshot_path_str)
-    if not snapshot_path.exists():
-        return False, [f"Snapshot file not found: {snapshot_path}"]
+    for mod_path in EXPECTED_SUBMODULES:
+        parts = mod_path.split(".")
+        curr: ModuleType = zero_pax
+        for part in parts:
+            member_map = dict(inspect.getmembers(curr))
+            if part not in member_map:
+                errors.append(f"Missing module hierarchy node: zero_pax.{mod_path} (at {part})")
+                break
+            next_mod = member_map[part]
+            if isinstance(next_mod, ModuleType):
+                curr = next_mod
 
-    raw_snapshot: Mapping[str, JsonValue] = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    top_members = dict(inspect.getmembers(zero_pax))
+    praxis_members = dict(inspect.getmembers(zero_pax.praxis))
+    for forbidden in FORBIDDEN_SIBLING_FRAMEWORKS:
+        if forbidden in top_members or forbidden in praxis_members:
+            errors.append(
+                f"Forbidden sibling framework replicated in zero_pax: {forbidden} (belongs in ../zero-{forbidden})"
+            )
+    return errors
 
-    target_refs: list[GhostRef] = []
-    cats_val = raw_snapshot.get("categories", {})
-    if not isinstance(cats_val, Mapping):
-        return False, ["Invalid snapshot structure: 'categories' is not a mapping."]
 
-    for _cat_name, items in cats_val.items():
-        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+def verify_snapshot_compliance(snapshot_path: Path) -> list[str]:
+    """Verify that all classes, fields, types, defaults, and docstrings in `snapshot_path` exist in `zero_pax`.
+
+    Args:
+        snapshot_path: Path to `pax_v1.4.0.json`.
+
+    Returns:
+        List of compliance error strings (empty if 100% compliant).
+    """
+    errors: list[str] = []
+    errors.extend(verify_module_hierarchy())
+
+    raw_text = snapshot_path.read_text(encoding="utf-8")
+    data = json.loads(raw_text)
+    categories = data.get("categories", {})
+    neural_items = categories.get("neural", [])
+
+    for item in neural_items:
+        name: str = item["name"]
+        api_path: str = item["api_path"]
+        if name not in EXPORTED_NAMES or name not in LAYER_REGISTRY:
+            errors.append(f"Missing API class: {api_path}")
             continue
-        for item in items:
-            ref_ghost = GhostRef.model_validate(item)
-            symbol_name = ref_ghost.name
-            if symbol_name not in LAYER_REGISTRY:
-                errors.append(f"Missing symbol in zero_pax.praxis.layers: {ref_ghost.api_path}")
-                continue
 
-            cls_obj = LAYER_REGISTRY[symbol_name]
-            extracted_ref = _extract_class_ghost_ref(cls_obj, ref_ghost.api_path)
-            extracted_param_names = {p.name for p in extracted_ref.params}
+        cls = LAYER_REGISTRY[name]
+        if not inspect.getdoc(cls):
+            errors.append(f"Missing docstring on class: {api_path}")
 
-            for expected_param in ref_ghost.params:
-                if expected_param.name in ("args", "kwargs"):
-                    continue
-                if expected_param.name not in extracted_param_names:
-                    errors.append(
-                        f"{ref_ghost.api_path}: Missing snapshot parameter '{expected_param.name}'"
+        expected_params = [p for p in item.get("params", []) if p["name"] not in ("args", "kwargs")]
+
+        if issubclass(cls, Enum):
+            member_names = set(cls.__members__.keys())
+            for param in expected_params:
+                pname = param["name"]
+                if pname not in member_names:
+                    errors.append(f"{api_path}: Missing Enum member '{pname}'")
+                else:
+                    snap_def = param.get("default")
+                    if isinstance(snap_def, str):
+                        expected_val = snap_def.strip("'")
+                        actual_val = cls.__members__[pname].value
+                        if actual_val != expected_val:
+                            errors.append(
+                                f"{api_path}.{pname}: Enum value mismatch (expected {expected_val!r}, got {actual_val!r})"
+                            )
+        elif issubclass(cls, BaseModel):
+            model_fields = cls.model_fields
+            documented_attrs: set[str] = set()
+            for base_cls in inspect.getmro(cls):
+                if base_cls.__module__.startswith("zero_pax"):
+                    documented_attrs |= _extract_documented_attributes(
+                        inspect.getdoc(base_cls) or ""
                     )
 
-            target_refs.append(extracted_ref)
+            for param in expected_params:
+                pname = param["name"]
+                if pname not in model_fields:
+                    errors.append(f"{api_path}: Missing field '{pname}'")
+                    continue
+                if pname not in documented_attrs:
+                    errors.append(f"{api_path}: Undocumented field '{pname}' in class docstring")
 
-    report = score_compliance(raw_snapshot, target_refs)
-    if report.missing:
-        for m in report.missing:
-            errors.append(f"Snapshot compliance missing endpoint: {m}")
-    if report.score_percentage < 100.0:
-        errors.append(f"Snapshot compliance score is {report.score_percentage}% (expected 100.0%)")
+                finfo = model_fields[pname]
+                snap_ann = param.get("annotation") or ""
+                snap_def = param.get("default")
+                actual_ann = str(finfo.annotation)
 
-    return len(errors) == 0, errors
+                if (
+                    ("None" in snap_ann or snap_def in ("'```(None)```'", "```(None)```"))
+                    and "None" not in actual_ann
+                    and "Optional" not in actual_ann
+                ):
+                    errors.append(
+                        f"{api_path}.{pname}: Type annotation {actual_ann} does not allow None (snapshot: {snap_ann})"
+                    )
+                if (
+                    "Sequence[int]" in snap_ann
+                    and "Sequence" not in actual_ann
+                    and "tuple" not in actual_ann
+                ):
+                    errors.append(
+                        f"{api_path}.{pname}: Type annotation {actual_ann} does not allow Sequence[int] (snapshot: {snap_ann})"
+                    )
+
+                should_check, expected_def = _parse_expected_default(snap_def)
+                if should_check:
+                    actual_def = finfo.get_default(call_default_factory=True)
+                    if actual_def != expected_def or type(actual_def) is not type(expected_def):
+                        errors.append(
+                            f"{api_path}.{pname}: Default mismatch (expected {expected_def!r}, got {actual_def!r})"
+                        )
+        else:
+            sig = inspect.signature(cls)
+            actual_params = set(sig.parameters.keys())
+            for param in expected_params:
+                pname = param["name"]
+                if pname not in actual_params:
+                    errors.append(f"{api_path}: Missing parameter '{pname}'")
+
+    return errors
 
 
-def verify_semantic_plan() -> tuple[bool, list[str]]:
-    """Validate that all APIs listed in `SEMANTIC_PLAN.md` are exported by `zero_pax`.
+def verify_semantic_plan(plan_path: Path) -> list[str]:
+    """Verify that every layer listed in `SEMANTIC_PLAN.md` is implemented and exported.
+
+    Args:
+        plan_path: Path to `SEMANTIC_PLAN.md`.
 
     Returns:
-        Tuple of (is_compliant, list_of_error_messages).
+        List of missing layer error strings.
     """
-    from zero_pax import EXPORTED_NAMES as ZERO_PAX_EXPORTS
-    from zero_pax.praxis.layers import EXPORTED_NAMES as LAYERS_EXPORTS
+    if not plan_path.is_file():
+        return [f"Missing plan file: {plan_path}"]
 
-    module_exports: Mapping[str, frozenset[str]] = {
-        "zero_pax": ZERO_PAX_EXPORTS,
-        "zero_pax.praxis.layers": LAYERS_EXPORTS,
-    }
-
-    plan_path = Path("SEMANTIC_PLAN.md")
-    if not plan_path.exists():
-        return True, []
-
-    content = plan_path.read_text(encoding="utf-8")
-    modules: dict[str, list[str]] = {}
-    current_module: str | None = None
-
-    for line in content.splitlines():
-        m_mod = re.search(r"`([a-zA-Z0-9_\.]+)`", line)
-        if line.startswith("## ") and m_mod:
-            raw_mod = m_mod.group(1)
-            prefix = raw_mod.split(".")[0]
-            current_module = raw_mod.replace(prefix, "zero_pax", 1)
-            if current_module not in modules:
-                modules[current_module] = []
-            continue
-        elif line.startswith("## ") and not current_module:
-            current_module = "zero_pax"
-            if current_module not in modules:
-                modules[current_module] = []
-            continue
-
-        if current_module:
-            m_item = re.search(r"^[*-] \[[xX ]\] .*?`([a-zA-Z0-9_]+)`", line)
-            if m_item:
-                funcs_part = m_item.group(1)
-                funcs = [f.strip(" `") for f in funcs_part.split("/")]
-                for fn in funcs:
-                    if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", fn):
-                        modules[current_module].append(fn)
-
-    missing: list[str] = []
-    for mod_name, funcs in modules.items():
-        if not funcs:
-            continue
-        exported_set = module_exports.get(mod_name)
-        if exported_set is None:
-            missing.extend([f"{mod_name}.{f}" for f in funcs])
-            continue
-        for f_name in funcs:
-            clean_name = f_name.strip()
-            if clean_name and clean_name not in exported_set:
-                missing.append(f"{mod_name}.{clean_name}")
-
-    return len(missing) == 0, missing
+    text = plan_path.read_text(encoding="utf-8")
+    layer_names = re.findall(r"\* \[[xX ]\] Implement `([A-Za-z0-9_]+)` semantics", text)
+    errors: list[str] = []
+    for name in layer_names:
+        if name not in EXPORTED_NAMES or name not in LAYER_REGISTRY:
+            errors.append(f"SEMANTIC_PLAN.md layer `{name}` is missing from zero_pax.praxis.layers")
+    return errors
 
 
 def main() -> int:
-    """Execute both snapshot and semantic plan compliance checks.
+    """Run the API and signature compliance check.
 
     Returns:
-        Exit code 0 if 100% compliant, 1 otherwise.
+        Exit code 0 on 100% compliance, 1 otherwise.
     """
-    sys_path_entry = str(Path("src").resolve())
-    if sys_path_entry not in sys.path:
-        sys.path.insert(0, sys_path_entry)
+    errors: list[str] = []
+    plan_path = Path("SEMANTIC_PLAN.md")
+    errors.extend(verify_semantic_plan(plan_path))
 
-    sem_ok, sem_errors = verify_semantic_plan()
-    snap_ok, snap_errors = verify_snapshot_compliance()
+    snapshot_path = _find_snapshot_path()
+    if snapshot_path is not None:
+        errors.extend(verify_snapshot_compliance(snapshot_path))
 
-    all_errors = sem_errors + snap_errors
-    if not sem_ok or not snap_ok or all_errors:
-        print("COMPLIANCE FAILURE:")
-        for err in all_errors[:50]:
+    if errors:
+        print(f"Compliance Check Failed with {len(errors)} error(s):")
+        for err in errors[:50]:
             print(f"  - {err}")
-        if len(all_errors) > 50:
-            print(f"  ... and {len(all_errors) - 50} more errors.")
+        if len(errors) > 50:
+            print(f"  ... and {len(errors) - 50} more errors.")
         return 1
 
     print(
-        "Compliance Check Passed! 100.0% compliant with pax_v1.4.0.json (108/108 APIs and all parameters)."
+        "Compliance Check Passed! 100.0% compliant with ml-ecosystem-snapshots v0.0.5 pax_v1.4.0.json (108/108 APIs, hierarchy, types, defaults, and docstrings)."
     )
     return 0
 

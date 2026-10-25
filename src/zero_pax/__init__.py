@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from zero_pax import _tensor_ops as _ops
+from zero_pax import praxis
 from zero_pax.praxis import layers
 from zero_pax.praxis.base import BasePraxisLayer
 from zero_pax.praxis.layers import (
@@ -311,6 +312,7 @@ __all__ = [
     "__call__",
     "init_weights",
     "layers",
+    "praxis",
 ]
 
 EXPORTED_NAMES: frozenset[str] = frozenset(__all__)

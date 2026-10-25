@@ -82,7 +82,7 @@ class AttentionProjection(BasePraxisLayer):
     """
 
     input_dim: int = 0
-    num_heads: int = 1
+    num_heads: int = 0
     dim_per_head: int = 0
     is_output_projection: bool = False
     use_bias: bool = True
@@ -189,7 +189,7 @@ class RelativeBias(BasePraxisLayer):
     use_length_as_position: bool = True
     relative_attention_num_buckets: int = 32
     relative_attention_max_distance: int = 128
-    bidirectional: bool = True
+    bidirectional: bool = False
     use_xavier_init: bool = False
     rb_stddev: float | None = None
 
@@ -322,7 +322,7 @@ class DotProductAttention(BasePraxisLayer):
     input_dim: int = 0
     hidden_dim: int = 0
     num_heads: int = 1
-    dim_per_head: int = 0
+    dim_per_head: int | None = None
     dropout_tpl: LayerTpl = None
     atten_dropout_prob: float = 0.0
     proj_tpl: LayerTpl = None
@@ -335,7 +335,7 @@ class DotProductAttention(BasePraxisLayer):
     output_proj_use_nhd_shape: bool = False
     internal_enable_query_scale: bool = True
     internal_enable_per_dim_scale: bool = True
-    scale_query_by_dim_per_head: bool = False
+    scale_query_by_dim_per_head: bool | None = False
     scale_query_by_head_dims: bool = False
     scale_logits_by_head_dims: bool = False
     atten_logit_cap: float = 0.0
@@ -443,7 +443,7 @@ class DotProductAttention(BasePraxisLayer):
         n_heads = self.num_heads if self.num_heads > 0 else 1
         h_dim = (
             self.dim_per_head
-            if self.dim_per_head > 0
+            if (self.dim_per_head is not None and self.dim_per_head > 0)
             else (self.hidden_dim // n_heads if self.hidden_dim > 0 else max(1, d_dim // n_heads))
         )
 
@@ -617,7 +617,7 @@ class DotProductAttentionXL(DotProductAttention):
         rel_pos_emb_dim: Dimension of the relative positional embedding.
     """
 
-    rel_pos_emb_dim: int = 0
+    rel_pos_emb_dim: int | None = 0
 
     def _compute_xl_bias(self, q_len: int, k_len: int, n_heads: int) -> Tensor | None:
         """Compute Transformer-XL sinusoidal relative distance bias `(1, N, Q, K)`.
@@ -630,7 +630,7 @@ class DotProductAttentionXL(DotProductAttention):
         Returns:
             Sinusoidal relative positional bias `Tensor` of shape `(1, N, Q, K)` or `None`.
         """
-        if self.rel_pos_emb_dim <= 0:
+        if self.rel_pos_emb_dim is None or self.rel_pos_emb_dim <= 0:
             return None
         u_bias = self.get_variable("u_bias", (1, n_heads, 1, 1))
         v_bias = self.get_variable("v_bias", (1, n_heads, 1, 1))
@@ -685,7 +685,7 @@ class DotProductAttentionWithContextXL(DotProductAttentionWithContext, DotProduc
         rel_pos_emb_dim: Dimension of the relative positional embedding.
     """
 
-    rel_pos_emb_dim: int = 0
+    rel_pos_emb_dim: int | None = None
 
 
 class LocalSelfAttention(DotProductAttentionWithContext):
@@ -696,7 +696,7 @@ class LocalSelfAttention(DotProductAttentionWithContext):
         simulated: Whether local block attention is simulated via full attention masking.
     """
 
-    block_size: int = 0
+    block_size: int | None = None
     simulated: bool = False
 
     def _compute_context_mask(self, seq_len: int) -> Tensor | None:
@@ -709,7 +709,7 @@ class LocalSelfAttention(DotProductAttentionWithContext):
             Additive local attention mask `Tensor` of shape `(1, 1, T, T)` or `None`.
         """
         base_mask = super()._compute_context_mask(seq_len)
-        if base_mask is not None or self.block_size <= 0:
+        if base_mask is not None or self.block_size is None or self.block_size <= 0:
             return base_mask
         pos = _ops.arange(seq_len)
         diff = _ops.abs(_ops.expand_dims(pos, 0) - _ops.expand_dims(pos, 1))
@@ -724,7 +724,7 @@ class LocalSelfAttentionXL(LocalSelfAttention, DotProductAttentionXL):
         rel_pos_emb_dim: Dimension of the relative positional embedding.
     """
 
-    rel_pos_emb_dim: int = 0
+    rel_pos_emb_dim: int | None = 0
 
 
 class LocalSelfAttentionRelativeBias(LocalSelfAttention):
@@ -798,7 +798,7 @@ class GroupedQueryAttention(BasePraxisLayer):
     hidden_dim: int = 0
     num_heads: int = 1
     num_kv_heads: int = 1
-    dim_per_head: int = 1
+    dim_per_head: int = 0
     dropout_tpl: LayerTpl = None
     atten_dropout_prob: float = 0.0
     atten_temp: float = 1.0
@@ -851,10 +851,10 @@ class GroupedQueryAttention(BasePraxisLayer):
 
         d_dim = self.input_dim if self.input_dim > 0 else q_in.shape[-1]
         n_heads = max(1, self.num_heads)
-        kv_heads = max(1, min(self.num_kv_heads, n_heads))
+        kv_heads = max(1, min(self.num_kv_heads if self.num_kv_heads > 0 else n_heads, n_heads))
         if n_heads % kv_heads != 0:
             kv_heads = 1
-        h_dim = self.dim_per_head if self.dim_per_head > 1 else max(1, d_dim // n_heads)
+        h_dim = self.dim_per_head if self.dim_per_head > 0 else max(1, d_dim // n_heads)
 
         wq_t = self.get_variable("w_q", (d_dim, n_heads, h_dim), explicit=w_q)
         wk_t = self.get_variable("w_k", (d_dim, kv_heads, h_dim), explicit=w_k)
@@ -935,10 +935,10 @@ class SelfAttentionWithNormAndResidual(BasePraxisLayer):
     input_weight: float = 1.0
     self_atten_tpl: LayerTpl = None
     norm_tpl: LayerTpl = None
-    pre_layer_norm: bool = True
+    pre_layer_norm: bool | None = True
     residual_dropout_prob: float = 0.0
     residual_dropout_tpl: LayerTpl = None
-    norm_policy: str = "pre"
+    norm_policy: str | None = None
     atten_dropout_prob: float = 0.0
     num_heads: int = 1
     dim_per_head: int | None = None
@@ -981,7 +981,7 @@ class SelfAttentionWithNormAndResidual(BasePraxisLayer):
         )
         attn = self.get_sublayer("self_atten", self.self_atten_tpl, default_attn)
 
-        use_pre = self.pre_layer_norm and self.norm_policy != "post"
+        use_pre = bool(self.pre_layer_norm) and self.norm_policy != "post"
         normed = ln(x) if use_pre else x
         atten_out = (
             attn(normed, atten_mask=atten_mask)

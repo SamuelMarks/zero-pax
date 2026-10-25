@@ -208,7 +208,7 @@ class GroupNorm(BaseNormalization):
     num_groups: int = 32
     min_group_size: int = 1
     cumulative: bool = False
-    input_rank: int | None = 4
+    input_rank: int | None = None
     epsilon: float = 0.001
     set_padded_output_to_zero: bool = True
     use_scale: bool = True

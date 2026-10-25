@@ -257,7 +257,7 @@ class AdaptedTransformerFeedForward(TransformerFeedForward):
     """
 
     adapter_tpl: LayerTpl = None
-    mode: str = "parallel"
+    mode: str = "sequential"
 
     def __call__(
         self,
@@ -335,7 +335,7 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
     norm_policy: str = "pre"
     residual_droppath_prob: float = 0.0
     num_experts: int = 0
-    num_groups: int = 1
+    num_groups: int = 0
     min_group_size: int | None = None
     expert_capacity_dim: int = 0
     expert_capacity_factor: float = 1.0
@@ -343,7 +343,7 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
     second_expert_policy: str = "all"
     internal_gshard_variance_scaling_fan_in_init: bool = True
     explicit_fan_in_fan_out_axes: bool = False
-    moe_load_balance_loss_weight: float | None = None
+    moe_load_balance_loss_weight: float | None = 1.0
     gating_func: str = "top2"
     gating_logit_cap: float = 0.0
     moe_gating_embedding_level: str = "token"
@@ -472,13 +472,13 @@ class Transformer(BasePraxisLayer):
     input_dims: int = 0
     model_dims: int = 0
     hidden_dims: int = 0
-    num_heads: int = 1
+    num_heads: int | None = None
     dim_per_head: int | None = None
     dropout_tpl: LayerTpl = None
     dropout_prob: float = 0.0
-    atten_dropout_prob: float | None = None
-    relu_dropout_prob: float | None = None
-    residual_dropout_prob: float | None = None
+    atten_dropout_prob: float | None = 0.0
+    relu_dropout_prob: float | None = 0.0
+    residual_dropout_prob: float | None = 0.0
     use_cross_attention: bool = False
     allow_skip_cross_attention: bool = False
     allow_at_least_one_headed_attention: bool = False
@@ -523,7 +523,7 @@ class Transformer(BasePraxisLayer):
             else (self.input_dims if self.input_dims > 0 else x.shape[-1])
         )
         f_hid = self.hidden_dims if self.hidden_dims > 0 else 4 * d_model
-        n_heads = max(1, self.num_heads)
+        n_heads = max(1, self.num_heads if self.num_heads is not None else 1)
         h_dim = (
             self.dim_per_head
             if (self.dim_per_head is not None and self.dim_per_head > 0)
@@ -536,7 +536,7 @@ class Transformer(BasePraxisLayer):
             num_heads=n_heads,
             dim_per_head=h_dim,
             atten_dropout_prob=self.atten_dropout_prob
-            if self.atten_dropout_prob is not None
+            if (self.atten_dropout_prob is not None and self.atten_dropout_prob > 0.0)
             else self.dropout_prob,
             params_init=self.params_init,
         )
@@ -776,7 +776,7 @@ class StackedTransformerRepeated(BasePraxisLayer):
     checkpoint_policy: str = "save_nothing"
     unroll_in_decode: bool = True
     repeat_layer_name: str | None = "repeat"
-    sublayer_name: str | None = None
+    sublayer_name: str | None = "sub"
     repeat_optimizer_dims_mapping: SplitDimsMapping = None
     nd_prefix_shape: Sequence[int] | None = None
     return_intermediate_outputs: bool = False
@@ -853,14 +853,14 @@ class PipelinedTransformer(BasePraxisLayer):
     """
 
     pipeline_stage: LayerTpl = None
-    num_pipeline_stages: int = 1
+    num_pipeline_stages: int | None = None
     num_pipeline_microbatches: int | None = None
     pipeline_microbatch_size: int | None = None
     stream_io: bool = False
     pipeline_broadcast_inputs: bool = False
     circular_repeat: int = 1
     checkpoint_policy: str = "save_iteration_input"
-    enable_async_circular_transfer: bool = False
+    enable_async_circular_transfer: bool = True
     bf16_accum_in_fp32: bool = False
 
     def __call__(
@@ -887,7 +887,8 @@ class PipelinedTransformer(BasePraxisLayer):
             self.pipeline_stage,
             StackedTransformer(num_layers=1, params_init=self.params_init),
         )
-        total = max(1, self.num_pipeline_stages) * max(1, self.circular_repeat)
+        n_stages = self.num_pipeline_stages if self.num_pipeline_stages is not None else 1
+        total = max(1, n_stages) * max(1, self.circular_repeat)
         for _ in range(total):
             out = (
                 stage(out, paddings=paddings)
@@ -932,7 +933,7 @@ class TransformerLm(BasePraxisLayer):
     skip_compute_loss: bool = False
     skip_aux_loss: bool = False
     record_activations_in_xent_output: bool = False
-    entropy_loss_weight: float = 0.0
+    entropy_loss_weight: float | None = None
 
     def __call__(
         self,
@@ -1201,7 +1202,7 @@ class LanguageModel(BasePraxisLayer):
     return_predictions: bool = False
     decoder_tpl: DecoderHParams | None = None
     model_type: str = "causal"
-    count_tokens: bool = True
+    count_tokens: bool = False
     apply_eval_sample_weights: bool = False
     report_strict_acc: bool = False
     label_smoothing_prob: float = 0.0
@@ -1322,7 +1323,7 @@ class SequenceModel(BasePraxisLayer):
     model_tpl: LayerTpl = None
     return_predictions: bool = False
     decoder_tpl: DecoderHParams | None = None
-    label_smoothing_prob: float = 0.0
+    label_smoothing_prob: float | None = None
 
     def __call__(
         self,
@@ -1361,7 +1362,7 @@ class BertModel(BasePraxisLayer):
     """
 
     lm_tpl: LayerTpl = None
-    label_smoothing_prob: float = 0.0
+    label_smoothing_prob: float | None = None
     mask_token_id: int = 0
     force_mask_generation: bool = False
     mlm_augmenter_tpl: LayerTpl = None

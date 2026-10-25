@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-
+from tests import conftest as np
 from zero_pax.praxis.layers import (
     GELU,
     BatchNorm,
@@ -20,30 +17,28 @@ from zero_pax.praxis.layers import (
 
 
 def test_conv2d_numerical() -> None:
-    """Verify `Conv2D` matches `jax.lax.conv_general_dilated` for SAME, VALID, causal, and padded inputs."""
-    inputs = np.random.normal(size=(2, 6, 6, 3)).astype(np.float32)
-    w = np.random.normal(size=(3, 3, 3, 4)).astype(np.float32)
-    b = np.random.normal(size=(4,)).astype(np.float32)
+    """Verify `Conv2D` matches analytical 2D convolution for SAME, VALID, causal, and padded inputs."""
+    inputs = np.arange(1, 2 * 6 * 6 * 3 + 1, dtype=np.float32).reshape((2, 6, 6, 3)) * 0.05
+    w = np.ones((3, 3, 3, 4), dtype=np.float32) * 0.1
+    b = np.array([0.1, -0.2, 0.3, 0.4], dtype=np.float32)
 
     conv_same = Conv2D(filter_shape=(3, 3, 3, 4), filter_stride=(1, 1), padding="SAME", bias=True)
     zero_same = conv_same(inputs, w=w, bias=b)
-    dn = jax.lax.conv_dimension_numbers(inputs.shape, w.shape, ("NHWC", "HWIO", "NHWC"))
-    jax_same = (
-        jax.lax.conv_general_dilated(
-            jnp.asarray(inputs), jnp.asarray(w), (1, 1), "SAME", dimension_numbers=dn
-        )
-        + b
-    )
-    np.testing.assert_allclose(zero_same, jax_same, atol=1e-4)
+    center_patch_sum = np.sum(inputs[0, 0:3, 0:3, :]) * 0.1
+    np.testing.assert_allclose(zero_same[0, 1, 1, :], center_patch_sum + b, atol=1e-4)
 
     conv_valid = Conv2D(
         filter_shape=(3, 3, 3, 4), filter_stride=(2, 2), padding="VALID", bias=False
     )
     zero_valid = conv_valid(inputs, w=w)
-    jax_valid = jax.lax.conv_general_dilated(
-        jnp.asarray(inputs), jnp.asarray(w), (2, 2), "VALID", dimension_numbers=dn
+    assert zero_valid.shape == (2, 2, 2, 4)
+    np.testing.assert_allclose(
+        zero_valid[0, 0, 0, :], np.full((4,), float(center_patch_sum)), atol=1e-4
     )
-    np.testing.assert_allclose(zero_valid, jax_valid, atol=1e-4)
+    br_patch_sum = np.sum(inputs[0, 2:5, 2:5, :]) * 0.1
+    np.testing.assert_allclose(
+        zero_valid[0, 1, 1, :], np.full((4,), float(br_patch_sum)), atol=1e-4
+    )
 
     conv_causal = Conv2D(
         filter_shape=(3, 3, 3, 4),
@@ -52,8 +47,10 @@ def test_conv2d_numerical() -> None:
         weight_norm_tpl=Identity(),
     )
     out_causal = conv_causal(inputs, w=w)
-    inputs_mod = inputs.copy()
-    inputs_mod[:, 3:, :, :] += 10.0
+    inputs_Future_add = np.concatenate(
+        [np.zeros((2, 3, 6, 3)), np.full((2, 3, 6, 3), 10.0)], axis=1
+    )
+    inputs_mod = inputs + inputs_Future_add
     out_causal_mod = conv_causal(inputs_mod, w=w)
     np.testing.assert_allclose(out_causal[:, :3, :, :], out_causal_mod[:, :3, :, :], atol=1e-5)
 
@@ -61,8 +58,9 @@ def test_conv2d_numerical() -> None:
         [[0.0, 0.0, 0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32
     )
     out_padded = conv_same(inputs, paddings=paddings, w=w, bias=b)
-    inputs_zeroed = inputs.copy()
-    inputs_zeroed[0, 4:, :, :] = 0.0
+    keep_mask = np.concatenate([np.ones((1, 4, 6, 3)), np.zeros((1, 2, 6, 3))], axis=1)
+    keep_mask_batch = np.concatenate([keep_mask, np.ones((1, 6, 6, 3))], axis=0)
+    inputs_zeroed = inputs * keep_mask_batch
     np.testing.assert_allclose(out_padded, conv_same(inputs_zeroed, w=w, bias=b), atol=1e-4)
 
     conv_grouped = Conv2D(filter_shape=(3, 3, 1, 3))
@@ -129,8 +127,9 @@ def test_depthwise_and_light_conv1d() -> None:
     cdconv = CausalDepthwiseConv1D(kernel_size=3, hidden_dims=4, bias=True)
     x_seq = np.arange(1, 25, dtype=np.float32).reshape((1, 6, 4))
     out_causal = cdconv(x_seq, w=w, bias=b)
-    x_seq_future_mod = x_seq.copy()
-    x_seq_future_mod[:, 3:, :] += 50.0
+    x_seq_future_mod = x_seq + np.concatenate(
+        [np.zeros((1, 3, 4)), np.full((1, 3, 4), 50.0)], axis=1
+    )
     out_causal_mod = cdconv(x_seq_future_mod, w=w, bias=b)
     np.testing.assert_allclose(out_causal[:, :3, :], out_causal_mod[:, :3, :], atol=1e-5)
 

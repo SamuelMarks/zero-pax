@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
-
+from tests import conftest as np
 from zero_pax.praxis.layers import (
     GELU,
     AdaptedTransformerFeedForward,
@@ -95,12 +94,12 @@ def test_transformer_feed_forward_variants() -> None:
         gating_logit_cap=10.0,
         norm_policy="post",
     )
-    gate_w = np.zeros((8, 2), dtype=np.float32)
-    gate_w[:, 1] = 5.0
-    wi_0 = np.zeros((2, 8, 4), dtype=np.float32)
-    wi_0[1] = 0.5
-    wo_0 = np.zeros((2, 4, 8), dtype=np.float32)
-    wo_0[1] = np.arange(1, 33, dtype=np.float32).reshape((4, 8)) * 0.2
+    gate_w = np.concatenate([np.zeros((8, 1)), np.full((8, 1), 5.0)], axis=1)
+    wi_0 = np.concatenate([np.zeros((1, 8, 4)), np.full((1, 8, 4), 0.5)], axis=0)
+    wo_0 = np.concatenate(
+        [np.zeros((1, 4, 8)), np.arange(1, 33, dtype=np.float32).reshape((1, 4, 8)) * 0.2],
+        axis=0,
+    )
     out_moe = moe(inputs, paddings=paddings, gate_w=gate_w, wi_0=wi_0, wo_0=wo_0)
     assert out_moe.shape == (2, 2, 8)
     np.testing.assert_allclose(out_moe[0, 1], np.zeros((8,)), atol=1e-5)

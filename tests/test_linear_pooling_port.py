@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import jax.numpy as jnp
-import numpy as np
 import pytest
 
+from tests import conftest as jnp
+from tests import conftest as np
 from zero_pax.praxis.layers import (
     GELU,
     Bias,

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
-
+from tests import conftest as np
 from zero_pax.praxis.layers import (
     Bias,
     BregmanPCA,
@@ -77,7 +76,12 @@ def test_vector_quantization_variants() -> None:
     assert q3.shape == (1, 2, 2) and float(info3["loss"]) >= 0.0
 
     rvq_active = RandomVectorQuantizer(
-        latent_dim=2, projection_dim=4, num_latent_classes=3, stack_ratio=2
+        latent_dim=2,
+        projection_dim=4,
+        num_latent_classes=3,
+        stack_ratio=2,
+        normalize_latent_vector=True,
+        normalize_codebook=True,
     )
     q_rvq, c_rvq, info_rvq = rvq_active(np.arange(1, 17, dtype=np.float32).reshape((2, 4, 2)))
     assert q_rvq.shape == (2, 2, 4) and c_rvq.shape == (2, 2)
@@ -106,8 +110,7 @@ def test_ngrammer_and_bregman_pca() -> None:
     np.testing.assert_allclose(ng_emb_tpl(inputs, input_ids=ids), np.full((2, 4, 8), 3.0))
 
     vq_ng = VQNgrammer(ngram_vocab_size=16, ngram_emb_dim=8, num_clusters=2)
-    codebook = np.zeros((2, 8), dtype=np.float32)
-    codebook[1, :] = 2.0
+    codebook = np.concatenate([np.zeros((1, 8)), np.full((1, 8), 2.0)], axis=0)
     out_vqng = vq_ng(inputs, codebook=codebook, ngram_table=ngram_table)
     np.testing.assert_allclose(out_vqng, np.full((2, 4, 8), 1.5), atol=1e-5)
 
