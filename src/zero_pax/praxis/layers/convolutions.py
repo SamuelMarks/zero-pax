@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from zero_pax import _tensor_ops as np
-from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
+from zero_pax import _tensor_ops as _ops
+from zero_pax.praxis.base import BasePraxisLayer, LayerTpl
 from zero_pax.praxis.layers.activations import Identity, ReLU, Swish
-from zero_pax.praxis.layers.linear_pooling import Linear
+from zero_pax.praxis.layers.linear_pooling import EinsumOp, Linear
 from zero_pax.praxis.layers.normalizations import BatchNorm, LayerNorm
 from zero_pax.types import (
     PoolingOutput,
@@ -66,12 +66,8 @@ class Conv2D(BasePraxisLayer):
                 return paddings
             return paddings[:, ::sh][:, :out_h]
         out_h = (h_in - eff_fh) // sh + 1
-        b_sz = paddings.shape[0]
-        out_pad = np.zeros((b_sz, out_h))
-        for i in range(out_h):
-            hs = i * sh
-            out_pad[:, i] = np.max(paddings[:, hs : hs + eff_fh], axis=1)
-        return out_pad
+        p_patches = _ops.extract_patches_1d(_ops.expand_dims(paddings, axis=-1), out_h, eff_fh, sh)
+        return _ops.max(p_patches[:, :, :, 0], axis=2)
 
     def __call__(
         self,
@@ -82,7 +78,7 @@ class Conv2D(BasePraxisLayer):
         *args: TensorOrScalar,
         **kwargs: TensorOrScalar,
     ) -> Tensor:
-        """Apply 2D convolution to `inputs`.
+        """Apply vectorized 2D convolution to `inputs`.
 
         Args:
             inputs: 4D input tensor of shape `[B, H, W, C_in]`.
@@ -95,12 +91,12 @@ class Conv2D(BasePraxisLayer):
         Returns:
             Convolved 4D `Tensor` of shape `[B, H_out, W_out, C_out]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         b_sz, h_in, w_in, c_in = x.shape
 
         if paddings is not None:
-            pad_in = np.asarray(paddings)
-            x = x * (1.0 - np.reshape(pad_in, (b_sz, h_in, 1, 1)))
+            pad_in = _ops.asarray(paddings)
+            x = x * (1.0 - _ops.reshape(pad_in, (b_sz, h_in, 1, 1)))
 
         if self.filter_shape == (0, 0, 0, 0):
             fh, fw, f_in, f_out = (3, 3, c_in, c_in)
@@ -109,10 +105,10 @@ class Conv2D(BasePraxisLayer):
 
         w_t = self.get_variable("w", (fh, fw, f_in, f_out), explicit=w, init=self.kernel_init)
         if self.weight_norm_tpl is not None:
-            wn_layer = instantiate_layer(self.weight_norm_tpl, Identity())
+            wn_layer = self.get_sublayer("weight_norm", self.weight_norm_tpl, Identity())
             w_t = wn_layer(w_t)
         if self.mask_t is not None:
-            w_t = w_t * np.asarray(self.mask_t)
+            w_t = w_t * _ops.asarray(self.mask_t)
 
         sh = self.filter_stride[0] if self.filter_stride[0] > 0 else 1
         sw = self.filter_stride[1] if self.filter_stride[1] > 0 else 1
@@ -141,7 +137,7 @@ class Conv2D(BasePraxisLayer):
             pad_top = pad_bottom = pad_left = pad_right = 0
 
         if pad_top > 0 or pad_bottom > 0 or pad_left > 0 or pad_right > 0:
-            x_pad = np.pad(
+            x_pad = _ops.pad(
                 x,
                 ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
                 mode="constant",
@@ -153,19 +149,21 @@ class Conv2D(BasePraxisLayer):
         groups = max(1, c_in // max(1, f_in))
         out_c_per_group = f_out // groups
 
-        out = np.zeros((b_sz, out_h, out_w, f_out))
-        for i in range(out_h):
-            for j in range(out_w):
-                hs = i * sh
-                ws = j * sw
-                window = x_pad[:, hs : hs + eff_fh : dh, ws : ws + eff_fw : dw, :]
-                if groups == 1:
-                    out[:, i, j, :] = np.einsum("bhwc,hwco->bo", window, w_t)
-                else:
-                    win_g = np.reshape(window, (b_sz, fh, fw, groups, f_in))
-                    w_g = np.reshape(w_t, (fh, fw, f_in, groups, out_c_per_group))
-                    res_g = np.einsum("bhwgc,hwcgo->bgo", win_g, w_g)
-                    out[:, i, j, :] = np.reshape(res_g, (b_sz, f_out))
+        patches = _ops.extract_patches_2d(x_pad, out_h, out_w, fh, fw, sh, sw, dh, dw)
+        if groups == 1:
+            op_layer = self.get_sublayer(
+                "einsum", self.einsum_tpl, EinsumOp(equation="bhwijc,ijco->bhwo")
+            )
+            out = (
+                op_layer("bhwijc,ijco->bhwo", patches, w_t)
+                if isinstance(op_layer, EinsumOp)
+                else op_layer(patches, w_t)
+            )
+        else:
+            win_g = _ops.reshape(patches, (b_sz, out_h, out_w, fh, fw, groups, f_in))
+            w_g = _ops.reshape(w_t, (fh, fw, f_in, groups, out_c_per_group))
+            res_g = _ops.einsum("bhwijgc,ijcgo->bhwgo", win_g, w_g)
+            out = _ops.reshape(res_g, (b_sz, out_h, out_w, f_out))
 
         if self.bias:
             b_t = self.get_variable("b", (f_out,), explicit=bias, init=self.bias_init)
@@ -207,20 +205,20 @@ class ConvBNAct(Conv2D):
         Returns:
             Convolved, batch-normalized, and activated 4D `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         out = super().__call__(x, paddings=paddings, w=w, bias=bias)
         out_paddings = (
-            self._compute_temporal_output_paddings(np.asarray(paddings), x.shape[1])
+            self._compute_temporal_output_paddings(_ops.asarray(paddings), x.shape[1])
             if paddings is not None
             else None
         )
-        bn_layer = instantiate_layer(self.batch_norm_tpl, BatchNorm())
+        bn_layer = self.get_sublayer("batch_norm", self.batch_norm_tpl, BatchNorm())
         if isinstance(bn_layer, BatchNorm):
             out = bn_layer(out, paddings=out_paddings)
         else:
             out = bn_layer(out)
 
-        act_layer = instantiate_layer(self.activation_tpl, ReLU())
+        act_layer = self.get_sublayer("activation", self.activation_tpl, ReLU())
         return act_layer(out)
 
 
@@ -255,10 +253,10 @@ class ConvBNActWithPadding(ConvBNAct):
         Returns:
             `(output, out_paddings)` tuple if `paddings` is not None, otherwise `output`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         out = super().__call__(x, paddings=paddings, w=w, bias=bias)
         if paddings is not None:
-            out_pad = self._compute_temporal_output_paddings(np.asarray(paddings), x.shape[1])
+            out_pad = self._compute_temporal_output_paddings(_ops.asarray(paddings), x.shape[1])
             return out, out_pad
         return out
 
@@ -303,7 +301,7 @@ class DepthwiseConv1D(BasePraxisLayer):
         *args: TensorOrScalar,
         **kwargs: TensorOrScalar,
     ) -> Tensor:
-        """Apply 1D depthwise convolution to `inputs`.
+        """Apply vectorized 1D depthwise convolution to `inputs`.
 
         Args:
             inputs: 3D input tensor of shape `[B, T, C]`.
@@ -316,12 +314,12 @@ class DepthwiseConv1D(BasePraxisLayer):
         Returns:
             Convolved 3D `Tensor` of shape `[B, T_out, C]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if paddings is not None:
-            pad_t = np.asarray(paddings)
-            x = x * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            x = x * (1.0 - _ops.expand_dims(pad_t, -1))
 
-        b_sz, t_len, c_in = x.shape
+        _, t_len, c_in = x.shape
         k_sz = self._resolve_kernel_size()
         dil = self.rhs_dilation_rate if self.rhs_dilation_rate > 0 else 1
         stride = self.filter_stride[0] if (self.filter_stride and self.filter_stride[0] > 0) else 1
@@ -330,8 +328,8 @@ class DepthwiseConv1D(BasePraxisLayer):
         if w is None:
             w_t = self.get_variable("w", (k_sz, 1, c_in))
         else:
-            w_raw = np.asarray(w)
-            w_t = np.reshape(w_raw, (k_sz, 1, c_in)) if w_raw.shape != (k_sz, 1, c_in) else w_raw
+            w_raw = _ops.asarray(w)
+            w_t = _ops.reshape(w_raw, (k_sz, 1, c_in)) if w_raw.shape != (k_sz, 1, c_in) else w_raw
 
         eff_k = (k_sz - 1) * dil + 1
         out_t = (t_len + stride - 1) // stride
@@ -344,7 +342,7 @@ class DepthwiseConv1D(BasePraxisLayer):
             pad_right = pad_total - pad_left
 
         x_pad = (
-            np.pad(
+            _ops.pad(
                 x,
                 ((0, 0), (pad_left, pad_right), (0, 0)),
                 mode="constant",
@@ -354,21 +352,23 @@ class DepthwiseConv1D(BasePraxisLayer):
             else x
         )
 
-        out = np.zeros((b_sz, out_t, c_in))
+        patches = _ops.extract_patches_1d(x_pad, out_t, k_sz, stride, dil)
         w_kernel = w_t[:, 0, :]
-        for i in range(out_t):
-            t_start = i * stride
-            window = x_pad[:, t_start : t_start + eff_k : dil, :]
-            out[:, i, :] = np.einsum("btc,tc->bc", window, w_kernel)
+        op_layer = self.get_sublayer("einsum", self.einsum_tpl, EinsumOp(equation="btkc,kc->btc"))
+        out = (
+            op_layer("btkc,kc->btc", patches, w_kernel)
+            if isinstance(op_layer, EinsumOp)
+            else op_layer(patches, w_kernel)
+        )
 
         if self.bias:
             b_t = self.get_variable("b", (c_in,), explicit=bias, init=self.bias_init)
             out = out + b_t
 
         if paddings is not None:
-            pad_t = np.asarray(paddings)
+            pad_t = _ops.asarray(paddings)
             out_pad = pad_t[:, ::stride][:, :out_t] if stride > 1 else pad_t
-            out = out * (1.0 - np.expand_dims(out_pad, -1))
+            out = out * (1.0 - _ops.expand_dims(out_pad, -1))
 
         return out
 
@@ -379,6 +379,7 @@ class CausalDepthwiseConv1D(DepthwiseConv1D):
     Attributes:
         kernel_size: 1D convolution kernel size (overrides `filter_shape[0]` when > 0).
         hidden_dims: Channel dimension size (overrides `filter_shape[1]` when > 0).
+        is_causal: Whether causal left-only padding is enforced (`True` by default).
     """
 
     kernel_size: int = 0
@@ -461,55 +462,57 @@ class LightConv1D(BasePraxisLayer):
         Returns:
             Convolved 3D `Tensor` of shape `[B, T, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_model = self.input_dims if self.input_dims > 0 else x.shape[-1]
         k_sz = self.kernel_size if self.kernel_size > 0 else 3
 
-        ln = instantiate_layer(self.ln_tpl, LayerNorm(dim=d_model))
+        ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=d_model))
         normed = ln(x, scale=ln_scale, bias=ln_bias) if isinstance(ln, LayerNorm) else ln(x)
 
-        lin_start = instantiate_layer(
+        lin_start = self.get_sublayer(
+            "linear_start",
             self.linear_start_tpl,
             Linear(input_dims=d_model, output_dims=2 * d_model, params_init=self.params_init),
         )
         proj = lin_start(normed, w=w_start) if isinstance(lin_start, Linear) else lin_start(normed)
-        act_inputs, gate = np.split(proj, 2, axis=-1)
-        gated = act_inputs * (1.0 / (1.0 + np.exp(-gate)))
+        act_inputs, gate = _ops.split(proj, 2, axis=-1)
+        gated = act_inputs * (1.0 / (1.0 + _ops.exp(-gate)))
 
         default_dconv: DepthwiseConv1D = (
             CausalDepthwiseConv1D(filter_shape=(k_sz, 1, d_model), params_init=self.params_init)
             if self.is_causal
             else DepthwiseConv1D(filter_shape=(k_sz, 1, d_model), params_init=self.params_init)
         )
-        dconv = instantiate_layer(self.depthwise_conv_tpl, default_dconv)
+        dconv = self.get_sublayer("depthwise_conv", self.depthwise_conv_tpl, default_dconv)
         conv_out = (
             dconv(gated, paddings=paddings, w=w_conv)
             if isinstance(dconv, DepthwiseConv1D)
             else dconv(gated)
         )
 
-        bn = instantiate_layer(self.conv_norm_layer_tpl, BatchNorm(dim=d_model))
+        bn = self.get_sublayer("conv_norm", self.conv_norm_layer_tpl, BatchNorm(dim=d_model))
         norm_conv = (
             bn(conv_out, paddings=paddings, gamma=bn_gamma, beta=bn_beta)
             if isinstance(bn, BatchNorm)
             else bn(conv_out)
         )
 
-        act_layer = instantiate_layer(self.conv_activation_tpl, Swish())
+        act_layer = self.get_sublayer("conv_activation", self.conv_activation_tpl, Swish())
         act_out = act_layer(norm_conv)
 
-        lin_end = instantiate_layer(
+        lin_end = self.get_sublayer(
+            "linear_end",
             self.linear_end_tpl,
             Linear(input_dims=d_model, output_dims=d_model, params_init=self.params_init),
         )
         out = lin_end(act_out, w=w_end) if isinstance(lin_end, Linear) else lin_end(act_out)
 
-        drop_layer = instantiate_layer(self.dropout_tpl, Identity())
+        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, Identity())
         out = drop_layer(out)
 
         if paddings is not None:
-            pad_t = np.asarray(paddings)
-            out = out * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            out = out * (1.0 - _ops.expand_dims(pad_t, -1))
 
         return out
 

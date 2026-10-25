@@ -2,25 +2,19 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from collections.abc import Iterator
 
 import pytest
 
-sys.path.insert(
-    0,
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../ml-switcheroo-compiler/src")),
-)
-from ml_switcheroo_compiler import core as _compiler_core
+from zero_pax import _tensor_ops
 
 
 @pytest.fixture(autouse=True)
 def switcheroo_config() -> Iterator[None]:
-    """Enable `ml_switcheroo_compiler` EagerMode for every test.
+    """Enable eager execution mode for every test.
 
     Yields:
-        None while `EagerMode` is active.
+        None while eager mode is active.
     """
-    with _compiler_core.EagerMode():
-        yield
+    _tensor_ops.set_eager_mode(True)
+    yield

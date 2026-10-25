@@ -8,7 +8,7 @@
 
 The Abstract ML Compiler ecosystem is designed to solve the $N \times M$ translation problem in Machine Learning. Instead of writing bespoke translators for every framework (JAX, PyTorch, Keras) to every target (WASM, WebGPU, TensorRT), we trace $N$ frontends into a strictly defined Intermediate Representation (IR), which is then consumed by $M$ backends.
 
-This achieves a source-to-source and source-to-browser compilation pipeline utilizing **strictly zero external dependencies** (relying solely on the Python Standard Library and `numpy` for eager evaluations).
+This achieves a source-to-source and source-to-browser compilation pipeline utilizing **strictly zero external execution dependencies** (relying solely on the Python Standard Library, `pydantic`, and `ml-switcheroo-ir` for pure-Python eager evaluations).
 
 ## Ecosystem Repository Taxonomy
 

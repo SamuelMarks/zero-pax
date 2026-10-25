@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
-from zero_pax.praxis.layers.activations import GELU, Identity, Sigmoid, Swish, Tanh
+from zero_pax.praxis.layers.activations import GELU, Identity, ReLU, Sigmoid, Swish, Tanh
 from zero_pax.praxis.layers.attentions import DotProductAttention
 from zero_pax.praxis.layers.linear_pooling import FeedForward, Linear
 from zero_pax.praxis.layers.normalizations import LayerNorm
@@ -104,20 +104,20 @@ class LstmCellSimple(BasePraxisLayer):
         Returns:
             Tuple `(c_t, m_t)` of updated cell state and hidden output state.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         b_sz = x.shape[0]
         h_dim = self.num_output_nodes if self.num_output_nodes > 0 else self.hidden_size
 
         c_prev: Tensor
         m_prev: Tensor
         if isinstance(state0, tuple):
-            c_prev = np.asarray(state0[0])
-            m_prev = np.asarray(state0[1])
+            c_prev = _ops.asarray(state0[0])
+            m_prev = _ops.asarray(state0[1])
             if h_dim <= 0:
                 h_dim = c_prev.shape[-1]
             x_t = x
         elif state0 is not None:
-            s_arr = np.asarray(state0)
+            s_arr = _ops.asarray(state0)
             if h_dim <= 0:
                 h_dim = s_arr.shape[-1] // 2 if s_arr.shape[-1] >= 2 else x.shape[-1]
             if s_arr.shape[-1] == 2 * h_dim and x.shape[-1] != 2 * h_dim:
@@ -133,12 +133,13 @@ class LstmCellSimple(BasePraxisLayer):
         else:
             if h_dim <= 0:
                 h_dim = max(1, x.shape[-1] // 3) if x.shape[-1] >= 3 else x.shape[-1]
-            c_prev = np.zeros((b_sz, h_dim))
-            m_prev = np.zeros((b_sz, h_dim))
+            state_init = self.zero_state_init_params or WeightInit(method="zeros")
+            c_prev = state_init.init_tensor((b_sz, h_dim), dtype=self.dtype)
+            m_prev = state_init.init_tensor((b_sz, h_dim), dtype=self.dtype)
             x_t = x[:, :h_dim] if x.shape[-1] == 3 * h_dim else x
 
         if self.reset_cell_state and reset_mask is not None:
-            rm = np.asarray(reset_mask)
+            rm = _ops.asarray(reset_mask)
             c_prev = c_prev * rm
             m_prev = m_prev * rm
 
@@ -149,19 +150,19 @@ class LstmCellSimple(BasePraxisLayer):
         wm_t = self.get_variable("wm", (in_dim + h_dim, n_gates * h_dim), explicit=wm)
         b_t = self.get_variable("b", (n_gates * h_dim,), explicit=b, init=self.bias_init)
 
-        concat_in = np.concatenate([x_t, m_prev], axis=-1)
-        gates_pre = np.einsum("bd,df->bf", concat_in, wm_t)
+        concat_in = _ops.concatenate([x_t, m_prev], axis=-1)
+        gates_pre = _ops.einsum("bd,df->bf", concat_in, wm_t)
         gates = self._transform_gates(gates_pre, n_gates, h_dim, b_t, gammas=gammas)
 
         sig = Sigmoid()
         tanh = Tanh()
 
         if cifg:
-            g_raw, f_raw, o_raw = np.split(gates, 3, axis=-1)
+            g_raw, f_raw, o_raw = _ops.split(gates, 3, axis=-1)
             f_t = sig(f_raw + self.forget_gate_bias)
             i_t = 1.0 - f_t
         else:
-            i_raw, g_raw, f_raw, o_raw = np.split(gates, 4, axis=-1)
+            i_raw, g_raw, f_raw, o_raw = _ops.split(gates, 4, axis=-1)
             i_t = sig(i_raw)
             f_t = sig(f_raw + self.forget_gate_bias)
 
@@ -170,14 +171,14 @@ class LstmCellSimple(BasePraxisLayer):
 
         c_new = f_t * c_prev + i_t * g_t
         if self.cell_value_cap is not None and self.cell_value_cap > 0.0:
-            c_new = np.clip(c_new, -self.cell_value_cap, self.cell_value_cap)
+            c_new = _ops.clip(c_new, -self.cell_value_cap, self.cell_value_cap)
 
         m_new = o_t * tanh(c_new) if self.output_nonlinearity else o_t * c_new
 
         if padding is not None:
-            pad_t = np.asarray(padding)
+            pad_t = _ops.asarray(padding)
             if pad_t.ndim == 1:
-                pad_t = np.expand_dims(pad_t, -1)
+                pad_t = _ops.expand_dims(pad_t, -1)
             c_new = c_prev * pad_t + c_new * (1.0 - pad_t)
             m_new = m_prev * pad_t + m_new * (1.0 - pad_t)
 
@@ -185,7 +186,12 @@ class LstmCellSimple(BasePraxisLayer):
 
 
 class CifgLstmCellSimple(LstmCellSimple):
-    """Coupled Input-Forget Gate (CIFG) LSTM cell where `i_t = 1 - f_t`."""
+    """Coupled Input-Forget Gate (CIFG) LSTM cell where `i_t = 1 - f_t`.
+
+    Attributes:
+        couple_input_forget_gates: Whether `i_t = 1 - f_t` (`True` by default).
+        num_gates: Number of gates (`3` by default for CIFG).
+    """
 
     couple_input_forget_gates: bool = True
     num_gates: int = 3
@@ -221,10 +227,10 @@ class LayerNormalizedLstmCellSimple(LstmCellSimple):
             Layer-normalized and biased gate tensor of shape `[B, n_gates * H]`.
         """
         b_sz = gates_pre.shape[0]
-        gates_reshaped = np.reshape(gates_pre, (b_sz, n_gates, h_dim))
-        mean_g = np.mean(gates_reshaped, axis=-1, keepdims=True)
-        var_g = np.var(gates_reshaped, axis=-1, keepdims=True)
-        normed_g = (gates_reshaped - mean_g) / np.sqrt(var_g + self.layer_norm_epsilon)
+        gates_reshaped = _ops.reshape(gates_pre, (b_sz, n_gates, h_dim))
+        mean_g = _ops.mean(gates_reshaped, axis=-1, keepdims=True)
+        var_g = _ops.var(gates_reshaped, axis=-1, keepdims=True)
+        normed_g = (gates_reshaped - mean_g) / _ops.sqrt(var_g + self.layer_norm_epsilon)
 
         gamma_t = self.get_variable(
             "gammas",
@@ -232,11 +238,45 @@ class LayerNormalizedLstmCellSimple(LstmCellSimple):
             explicit=gammas,
             init=WeightInit(method="ones", scale=1.0),
         )
-        scaled_g = normed_g * np.expand_dims(gamma_t, 0)
-        gates = np.reshape(scaled_g, (b_sz, n_gates * h_dim))
+        scaled_g = normed_g * _ops.expand_dims(gamma_t, 0)
+        gates = _ops.reshape(scaled_g, (b_sz, n_gates * h_dim))
         if self.enable_lstm_bias:
             gates = gates + b_t
         return gates
+
+
+def _ensure_3d_sequence(x: Tensor) -> tuple[Tensor, int]:
+    """Promote 1D or 2D tensors to 3D `[B, T, D]` and return `(x_3d, orig_ndim)`.
+
+    Args:
+        x: Input tensor of rank 1, 2, or 3+.
+
+    Returns:
+        Tuple of `(promoted_3d_tensor, original_ndim)`.
+    """
+    orig_ndim = x.ndim
+    if orig_ndim == 1:
+        return _ops.reshape(x, (1, 1, x.shape[0])), orig_ndim
+    if orig_ndim == 2:
+        return _ops.expand_dims(x, 1), orig_ndim
+    return x, orig_ndim
+
+
+def _restore_sequence_rank(out_3d: Tensor, orig_ndim: int) -> Tensor:
+    """Restore a 3D `[B, T, D]` output tensor to `orig_ndim` when `T == 1`.
+
+    Args:
+        out_3d: 3D output sequence tensor.
+        orig_ndim: Original input rank prior to `_ensure_3d_sequence`.
+
+    Returns:
+        Rank-restored `Tensor`.
+    """
+    if orig_ndim == 1:
+        return out_3d[0, 0, :]
+    if orig_ndim == 2:
+        return out_3d[:, 0, :]
+    return out_3d
 
 
 class FRnn(BasePraxisLayer):
@@ -265,25 +305,24 @@ class FRnn(BasePraxisLayer):
         """Unroll the recurrent state update across the time dimension `T` of `inputs`.
 
         Args:
-            inputs: 3D input sequence tensor of shape `[B, T, D]`.
+            inputs: 3D input sequence tensor of shape `[B, T, D]` (or 1D/2D single-step input).
             paddings: Optional 2D padding mask of shape `[B, T]`.
             state0: Optional initial hidden state tensor of shape `[B, H]`.
             *args: Additional positional arguments.
             **kwargs: Additional keyword arguments.
 
         Returns:
-            Unrolled output sequence `Tensor` of shape `[B, T, H]`.
+            Unrolled output sequence `Tensor` of shape `[B, T, H]` (or rank-matched for 1D/2D input).
         """
-        x = np.asarray(inputs)
-        if x.ndim < 3:
-            return x
+        raw_x = self._to_tensor(inputs)
+        x, orig_ndim = _ensure_3d_sequence(raw_x)
         b_sz, t_len, d_in = x.shape
         h_dim = self.hidden_size if self.hidden_size > 0 else d_in
-        state = np.zeros((b_sz, h_dim)) if state0 is None else np.asarray(state0)
-        pad_t = np.asarray(paddings) if paddings is not None else None
+        state = _ops.zeros((b_sz, h_dim)) if state0 is None else _ops.asarray(state0)
+        pad_t = _ops.asarray(paddings) if paddings is not None else None
 
         if isinstance(self.cell_tpl, LstmCellSimple):
-            c_state = np.zeros((b_sz, h_dim))
+            c_state = _ops.zeros((b_sz, h_dim))
             m_state = state
             outputs_lstm: list[Tensor] = []
             indices_lstm = list(range(t_len - 1, -1, -1)) if self.reverse else list(range(t_len))
@@ -292,13 +331,15 @@ class FRnn(BasePraxisLayer):
                 c_state, m_state = self.cell_tpl(
                     x[:, t, :], state0=(c_state, m_state), padding=step_pad
                 )
-                outputs_lstm.append(np.expand_dims(m_state, 1))
+                outputs_lstm.append(_ops.expand_dims(m_state, 1))
             if self.reverse:
                 outputs_lstm.reverse()
-            return np.concatenate(outputs_lstm, axis=1)
+            return _restore_sequence_rank(_ops.concatenate(outputs_lstm, axis=1), orig_ndim)
 
         cell_fn = (
-            instantiate_layer(self.cell_tpl, Identity()) if self.cell_tpl is not None else None
+            self.get_sublayer("cell", self.cell_tpl, Identity())
+            if self.cell_tpl is not None
+            else None
         )
 
         outputs: list[Tensor] = []
@@ -309,17 +350,17 @@ class FRnn(BasePraxisLayer):
             if cell_fn is not None:
                 new_state = cell_fn(state + step_in)
             else:
-                new_state = np.tanh(state + step_in)
+                new_state = _ops.tanh(state + step_in)
             if pad_t is not None:
                 step_pad = pad_t[:, t : t + 1]
                 state = state * step_pad + new_state * (1.0 - step_pad)
             else:
                 state = new_state
-            outputs.append(np.expand_dims(state, 1))
+            outputs.append(_ops.expand_dims(state, 1))
 
         if self.reverse:
             outputs.reverse()
-        return np.concatenate(outputs, axis=1)
+        return _restore_sequence_rank(_ops.concatenate(outputs, axis=1), orig_ndim)
 
 
 class LstmFrnn(FRnn):
@@ -360,7 +401,7 @@ class LstmFrnn(FRnn):
         """Unroll `LstmCellSimple` across all time steps `T` of `inputs`.
 
         Args:
-            inputs: 3D input sequence tensor of shape `[B, T, D_in]`.
+            inputs: 3D input sequence tensor of shape `[B, T, D_in]` (or 1D/2D single-step input).
             paddings: Optional 2D padding mask of shape `[B, T]`.
             state0: Optional initial `(c_0, m_0)` tuple.
             wm: Optional explicit LSTM weight matrix.
@@ -369,11 +410,10 @@ class LstmFrnn(FRnn):
             **kwargs: Additional keyword arguments.
 
         Returns:
-            Output sequence `Tensor` of shape `[B, T, D_out]`.
+            Output sequence `Tensor` of shape `[B, T, D_out]` (or rank-matched for 1D/2D input).
         """
-        x = np.asarray(inputs)
-        if x.ndim < 3:
-            return x
+        raw_x = self._to_tensor(inputs)
+        x, orig_ndim = _ensure_3d_sequence(raw_x)
         b_sz, t_len, d_in = x.shape
         h_dim = (
             self.num_output_nodes
@@ -390,26 +430,28 @@ class LstmFrnn(FRnn):
             couple_input_forget_gates=self.couple_input_forget_gates,
             reset_cell_state=self.reset_cell_state,
             params_init=self.params_init,
+            parent=self,
+            name="lstm_cell",
         )
 
         if isinstance(state0, tuple):
-            c_t, m_t = np.asarray(state0[0]), np.asarray(state0[1])
+            c_t, m_t = _ops.asarray(state0[0]), _ops.asarray(state0[1])
         else:
-            c_t = np.zeros((b_sz, h_dim))
-            m_t = np.zeros((b_sz, h_dim))
+            c_t = _ops.zeros((b_sz, h_dim))
+            m_t = _ops.zeros((b_sz, h_dim))
 
-        pad_t = np.asarray(paddings) if paddings is not None else None
+        pad_t = _ops.asarray(paddings) if paddings is not None else None
         outputs: list[Tensor] = []
         time_indices = list(range(t_len - 1, -1, -1)) if self.reverse else list(range(t_len))
 
         for t in time_indices:
             step_pad = pad_t[:, t : t + 1] if pad_t is not None else None
             c_t, m_t = cell(x[:, t, :], state0=(c_t, m_t), wm=wm, b=b, padding=step_pad)
-            outputs.append(np.expand_dims(m_t, 1))
+            outputs.append(_ops.expand_dims(m_t, 1))
 
         if self.reverse:
             outputs.reverse()
-        return np.concatenate(outputs, axis=1)
+        return _restore_sequence_rank(_ops.concatenate(outputs, axis=1), orig_ndim)
 
 
 class StackFrnn(BasePraxisLayer):
@@ -449,15 +491,15 @@ class StackFrnn(BasePraxisLayer):
         Returns:
             Stacked recurrent output `Tensor` of shape `[B, T, D_out]`.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         h_dim = (
             self.num_output_nodes
             if self.num_output_nodes > 0
             else (self.hidden_size if self.hidden_size > 0 else out.shape[-1])
         )
-        for _ in range(max(1, self.num_layers)):
+        for idx in range(max(1, self.num_layers)):
             default_frnn = FRnn(hidden_size=h_dim, params_init=self.params_init)
-            frnn = instantiate_layer(self.frnn_tpl, default_frnn)
+            frnn = instantiate_layer(self.frnn_tpl, default_frnn, parent=self, name=f"frnn_{idx}")
             out = frnn(out, paddings=paddings) if isinstance(frnn, FRnn) else frnn(out)
         return out
 
@@ -511,7 +553,7 @@ class SSM(BasePraxisLayer):
         """Apply discretized state space recurrence over `inputs`.
 
         Args:
-            inputs: 3D input sequence tensor of shape `[B, T, D_in]`.
+            inputs: 3D input sequence tensor of shape `[B, T, D_in]` (or 1D/2D single-step input).
             paddings: Optional 2D padding mask of shape `[B, T]`.
             a_diag: Optional diagonal state matrix `A` of shape `[N]` (defaults to `-1.0`).
             b_mat: Optional input-to-state matrix `B` of shape `[D_in, N]`.
@@ -524,45 +566,68 @@ class SSM(BasePraxisLayer):
         Returns:
             SSM output sequence `Tensor` of shape `[B, T, D_out]`.
         """
-        u = np.asarray(inputs)
-        if u.ndim < 3:
-            return u
+        raw_u = self._to_tensor(inputs)
+        u, orig_ndim = _ensure_3d_sequence(raw_u)
         b_sz, t_len, d_in = u.shape
         d_out = self.hidden_size if self.hidden_size > 0 else d_in
         n_state = self.dim if self.dim > 0 else max(1, self.ssm_dim)
 
         if a_diag is not None:
-            a_t = np.asarray(a_diag)
+            a_t = _ops.asarray(a_diag)
         elif self.hippo_type.lower() == "legt":
-            a_t = -(2.0 * np.arange(1, n_state + 1) - 1.0)
+            a_t = -(2.0 * _ops.arange(1, n_state + 1) - 1.0)
         elif self.hippo_type.lower() == "lagt":
-            a_t = -0.5 * np.ones((n_state,))
+            a_t = -0.5 * _ops.ones((n_state,))
         else:
-            a_t = -np.ones((n_state,))
+            a_t = -_ops.ones((n_state,))
 
-        b_t = np.ones((d_in, n_state)) * (1.0 / float(d_in)) if b_mat is None else np.asarray(b_mat)
-        c_t = self.get_variable("c_mat", (n_state, d_out)) if c_mat is None else np.asarray(c_mat)
-        d_t = np.eye(d_in, d_out) if d_vec is None else np.asarray(d_vec)
+        b_t = (
+            _ops.ones((d_in, n_state)) * (1.0 / float(d_in))
+            if b_mat is None
+            else _ops.asarray(b_mat)
+        )
+        c_t = self.get_variable("c_mat", (n_state, d_out)) if c_mat is None else _ops.asarray(c_mat)
+        d_t = _ops.eye(d_in, d_out) if d_vec is None else _ops.asarray(d_vec)
 
-        a_bar = np.exp(dt * a_t)
-        b_bar = dt * b_t
+        eff_dt = max(self.dt_min, min(self.dt_max, dt * self.step_size))
+        a_bar = _ops.exp(eff_dt * a_t)
+        b_bar = eff_dt * b_t
 
-        h = np.zeros((b_sz, n_state))
-        pad_t = np.asarray(paddings) if paddings is not None else None
+        h = _ops.zeros((b_sz, n_state))
+        pad_t = _ops.asarray(paddings) if paddings is not None else None
         outputs: list[Tensor] = []
 
         for t in range(t_len):
             u_step = u[:, t, :]
-            h_next = h * a_bar + np.einsum("bd,dn->bn", u_step, b_bar)
+            h_next = h * a_bar + _ops.einsum("bd,dn->bn", u_step, b_bar)
             if pad_t is not None:
                 p_step = pad_t[:, t : t + 1]
                 h = h * p_step + h_next * (1.0 - p_step)
             else:
                 h = h_next
-            y_step = np.einsum("bn,no->bo", h, c_t) + np.einsum("bd,do->bo", u_step, d_t)
-            outputs.append(np.expand_dims(y_step, 1))
+            y_step = _ops.einsum("bn,no->bo", h, c_t) + _ops.einsum("bd,do->bo", u_step, d_t)
+            outputs.append(_ops.expand_dims(y_step, 1))
 
-        return np.concatenate(outputs, axis=1)
+        forward_out = _ops.concatenate(outputs, axis=1)
+        if not self.bidirectional:
+            return _restore_sequence_rank(forward_out, orig_ndim)
+
+        h_rev = _ops.zeros((b_sz, n_state))
+        rev_outputs: list[Tensor] = []
+        for t in range(t_len - 1, -1, -1):
+            u_step = u[:, t, :]
+            h_next = h_rev * a_bar + _ops.einsum("bd,dn->bn", u_step, b_bar)
+            if pad_t is not None:
+                p_step = pad_t[:, t : t + 1]
+                h_rev = h_rev * p_step + h_next * (1.0 - p_step)
+            else:
+                h_rev = h_next
+            y_rev = _ops.einsum("bn,no->bo", h_rev, c_t)
+            rev_outputs.append(_ops.expand_dims(y_rev, 1))
+        rev_outputs.reverse()
+        return _restore_sequence_rank(
+            forward_out + _ops.concatenate(rev_outputs, axis=1), orig_ndim
+        )
 
 
 class SSMGated(SSM):
@@ -650,7 +715,7 @@ class SSMGated(SSM):
         Returns:
             Gated SSM output `Tensor` of shape `[B, T, D_out]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_in = x.shape[-1]
         d_out = (
             self.hidden_size
@@ -658,37 +723,44 @@ class SSMGated(SSM):
             else (self.input_dims if self.input_dims > 0 else d_in)
         )
 
-        ln = instantiate_layer(self.ln_tpl, LayerNorm(dim=d_in))
+        ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=d_in))
         normed = ln(x)
-        act = Swish() if self.activation_fn.lower() == "swish" else GELU()
+        act_name = self.activation_fn.lower()
+        act = Swish() if act_name == "swish" else (ReLU() if act_name == "relu" else GELU())
         gate = act(normed)
 
         default_ssm = SSM(
             nheads=self.ssm_nheads if self.ssm_nheads > 1 else self.nheads,
             head_dim=self.head_dim,
             ssm_dim=self.ssm_dim,
+            step_size=self.ssm_step_size,
             hippo_type=self.ssm_hippo_type if self.ssm_hippo_type != "legs" else self.hippo_type,
+            bidirectional=self.bidirectional,
             hidden_size=d_out,
             params_init=self.params_init,
         )
-        ssm_layer = instantiate_layer(self.ssm_tpl, default_ssm)
+        ssm_layer = self.get_sublayer("ssm", self.ssm_tpl, default_ssm)
         ssm_out = (
             ssm_layer(normed, paddings=paddings)
             if isinstance(ssm_layer, SSM)
             else ssm_layer(normed)
         )
 
-        if gate.shape[-1] != d_out:
-            gate_proj = instantiate_layer(
+        if gate.shape[-1] != d_out or self.gss_fflayer_tpl is not None:
+            gate_proj = self.get_sublayer(
+                "gss_fflayer",
                 self.gss_fflayer_tpl,
-                Linear(input_dims=gate.shape[-1], output_dims=d_out, params_init=self.params_init),
+                Linear(
+                    input_dims=gate.shape[-1],
+                    output_dims=d_out,
+                    weight_init=WeightInit(method="ones", scale=1.0),
+                    params_init=self.params_init,
+                ),
             )
-            gate = (
-                gate_proj(gate, w=np.eye(gate.shape[-1], d_out))
-                if isinstance(gate_proj, Linear)
-                else gate_proj(gate)
-            )
+            gate = gate_proj(gate)
 
+        if ssm_out.shape[-1] != gate.shape[-1]:
+            ssm_out = ssm_out[..., : gate.shape[-1]]
         return ssm_out * gate
 
 
@@ -724,15 +796,23 @@ class SSMTransformer(SSMGated):
         ssm_out = super().__call__(inputs, paddings, *args, **kwargs)
         d_out = ssm_out.shape[-1]
         if self.tr_atten_tpl is not None:
-            attn = instantiate_layer(
+            attn = self.get_sublayer(
+                "tr_atten",
                 self.tr_atten_tpl,
-                DotProductAttention(input_dim=d_out, params_init=self.params_init),
+                DotProductAttention(
+                    input_dim=d_out,
+                    num_heads=max(1, self.num_heads),
+                    dim_per_head=self.dim_per_head or max(1, d_out // max(1, self.num_heads)),
+                    params_init=self.params_init,
+                ),
             )
             ssm_out = ssm_out + attn(ssm_out)
         if self.tr_fflayer_tpl is not None:
-            ff = instantiate_layer(
+            f_hid = self.hidden_dims if self.hidden_dims > 0 else d_out
+            ff = self.get_sublayer(
+                "tr_fflayer",
                 self.tr_fflayer_tpl,
-                FeedForward(input_dims=d_out, output_dims=d_out, params_init=self.params_init),
+                FeedForward(input_dims=d_out, output_dims=f_hid, params_init=self.params_init),
             )
             ssm_out = ssm_out + ff(ssm_out)
         return ssm_out

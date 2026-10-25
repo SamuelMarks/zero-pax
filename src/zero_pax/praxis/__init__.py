@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ml_switcheroo_compiler as ml_switcheroo
+import ml_switcheroo_ir as ml_switcheroo
 
 from zero_pax.praxis import base, layers
 

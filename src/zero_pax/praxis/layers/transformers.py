@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
 from zero_pax.praxis.layers.activations import Identity, ReLU
 from zero_pax.praxis.layers.attentions import DotProductAttention
@@ -32,10 +32,30 @@ def _build_causal_mask(seq_len: int) -> Tensor:
     Returns:
         Additive causal mask `Tensor` (`0.0` for past/present, `-1e9` for future).
     """
-    pos = np.arange(seq_len)
-    future = np.expand_dims(pos, 0) > np.expand_dims(pos, 1)
-    mask_2d = np.where(future, -1e9, 0.0)
-    return np.reshape(mask_2d, (1, 1, seq_len, seq_len))
+    pos = _ops.arange(seq_len)
+    future = _ops.expand_dims(pos, 0) > _ops.expand_dims(pos, 1)
+    mask_2d = _ops.where(future, -1e9, 0.0)
+    return _ops.reshape(mask_2d, (1, 1, seq_len, seq_len))
+
+
+def _build_prefix_mask(seq_len: int) -> Tensor:
+    """Construct a prefix-LM additive attention mask of shape `(1, 1, T, T)`.
+
+    Tokens in the first half `0 .. T//2 - 1` attend bidirectionally within the prefix,
+    while tokens in `T//2 .. T - 1` attend causally.
+
+    Args:
+        seq_len: Sequence length `T`.
+
+    Returns:
+        Additive prefix-LM mask `Tensor`.
+    """
+    prefix_len = max(1, seq_len // 2)
+    q_pos = _ops.expand_dims(_ops.arange(seq_len), 1)
+    k_pos = _ops.expand_dims(_ops.arange(seq_len), 0)
+    allowed = (k_pos <= q_pos) | (k_pos < prefix_len)
+    mask_2d = _ops.where(allowed, 0.0, -1e9)
+    return _ops.reshape(mask_2d, (1, 1, seq_len, seq_len))
 
 
 class TransformerFeedForward(BasePraxisLayer):
@@ -126,69 +146,91 @@ class TransformerFeedForward(BasePraxisLayer):
         Returns:
             Output `Tensor` of shape `[..., D_out]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         in_d = self.input_dims if self.input_dims > 0 else x.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
         hid_d = self.hidden_dims if self.hidden_dims > 0 else 4 * in_d
 
         if self.apply_padding_first and paddings is not None:
-            pad_t = np.asarray(paddings)
-            x = x * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            x = x * (1.0 - _ops.expand_dims(pad_t, -1))
 
         residual = x
-        ln = instantiate_layer(self.ln_tpl, LayerNorm(dim=in_d))
+        ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=in_d))
 
         if self.norm_policy in ("pre", "primer_hybrid"):
             normed = ln(x, scale=ln_scale, bias=ln_bias) if isinstance(ln, LayerNorm) else ln(x)
         else:
             normed = x
 
-        act_fn = instantiate_layer(self.activation_tpl, ReLU())
+        act_fn = self.get_sublayer("activation", self.activation_tpl, ReLU())
 
         if self.use_gated_activation:
-            ff_gate = FeedForward(
-                input_dims=in_d,
-                output_dims=hid_d,
-                has_bias=self.has_bias,
-                activation_tpl=act_fn,
-                params_init=self.params_init,
+            ff_gate = self.get_sublayer(
+                "ffn1",
+                self.ffn1_tpl or self.fflayer_tpl,
+                FeedForward(
+                    input_dims=in_d,
+                    output_dims=hid_d,
+                    has_bias=self.has_bias,
+                    activation_tpl=act_fn,
+                    params_init=self.params_init,
+                ),
             )
-            ff_lin = FeedForward(
-                input_dims=in_d,
-                output_dims=hid_d,
-                has_bias=self.has_bias,
-                activation_tpl=Identity(),
-                params_init=self.params_init,
+            ff_lin = self.get_sublayer(
+                "ffn0",
+                self.ffn0_tpl or self.fflayer_tpl,
+                FeedForward(
+                    input_dims=in_d,
+                    output_dims=hid_d,
+                    has_bias=self.has_bias,
+                    activation_tpl=Identity(),
+                    params_init=self.params_init,
+                ),
             )
-            gate_val = ff_gate(normed, w=w1_gate, b=b1_gate)
-            lin_val = ff_lin(normed, w=w1, b=b1)
+            gate_val = (
+                ff_gate(normed, w=w1_gate, b=b1_gate)
+                if isinstance(ff_gate, FeedForward)
+                else ff_gate(normed)
+            )
+            lin_val = (
+                ff_lin(normed, w=w1, b=b1) if isinstance(ff_lin, FeedForward) else ff_lin(normed)
+            )
             act_out = gate_val * lin_val
         else:
-            ff1 = FeedForward(
-                input_dims=in_d,
-                output_dims=hid_d,
-                has_bias=self.has_bias,
-                activation_tpl=act_fn,
-                params_init=self.params_init,
+            ff1 = self.get_sublayer(
+                "ffn1",
+                self.ffn0_tpl or self.fflayer_tpl,
+                FeedForward(
+                    input_dims=in_d,
+                    output_dims=hid_d,
+                    has_bias=self.has_bias,
+                    activation_tpl=act_fn,
+                    params_init=self.params_init,
+                ),
             )
-            act_out = ff1(normed, w=w1, b=b1)
+            act_out = ff1(normed, w=w1, b=b1) if isinstance(ff1, FeedForward) else ff1(normed)
 
-        relu_drop = instantiate_layer(self.relu_dropout_tpl, Identity())
+        relu_drop = self.get_sublayer("relu_dropout", self.relu_dropout_tpl, Identity())
         act_out = relu_drop(act_out)
 
         if self.norm_policy == "primer_hybrid":
-            ln_mid = LayerNorm(dim=hid_d)
+            ln_mid = self.get_sublayer("ln_mid", None, LayerNorm(dim=hid_d))
             act_out = ln_mid(act_out)
 
-        ff2 = FeedForward(
-            input_dims=hid_d,
-            output_dims=out_d,
-            has_bias=self.has_bias,
-            activation_tpl=Identity(),
-            params_init=self.params_init,
+        ff2 = self.get_sublayer(
+            "ffn2",
+            self.ffn2_tpl or self.fflayer_tpl,
+            FeedForward(
+                input_dims=hid_d,
+                output_dims=out_d,
+                has_bias=self.has_bias,
+                activation_tpl=Identity(),
+                params_init=self.params_init,
+            ),
         )
-        projected = ff2(act_out, w=w2, b=b2)
-        res_drop = instantiate_layer(self.residual_dropout_tpl, Identity())
+        projected = ff2(act_out, w=w2, b=b2) if isinstance(ff2, FeedForward) else ff2(act_out)
+        res_drop = self.get_sublayer("residual_dropout", self.residual_dropout_tpl, Identity())
         projected = res_drop(projected)
 
         if self.add_skip_connection and in_d == out_d:
@@ -200,8 +242,8 @@ class TransformerFeedForward(BasePraxisLayer):
             out = ln(out, scale=ln_scale, bias=ln_bias) if isinstance(ln, LayerNorm) else ln(out)
 
         if not self.apply_padding_first and paddings is not None:
-            pad_t = np.asarray(paddings)
-            out = out * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            out = out * (1.0 - _ops.expand_dims(pad_t, -1))
 
         return out
 
@@ -235,11 +277,11 @@ class AdaptedTransformerFeedForward(TransformerFeedForward):
         Returns:
             Adapted FFN output `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         ffn_out = super().__call__(x, paddings, *args, **kwargs)
         if self.adapter_tpl is None:
             return ffn_out
-        adapter = instantiate_layer(self.adapter_tpl, Identity())
+        adapter = self.get_sublayer("adapter", self.adapter_tpl, Identity())
         if self.mode == "parallel":
             return ffn_out + (adapter(x) - x)
         return adapter(ffn_out)
@@ -336,17 +378,12 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
         Returns:
             MoE FFN output `Tensor` of shape `[B, T, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         in_d = self.input_dims if self.input_dims > 0 else x.shape[-1]
         hid_d = self.hidden_dims if self.hidden_dims > 0 else 4 * in_d
         n_exp = max(1, self.num_experts)
 
-        if (
-            gate_w is None
-            and wi_0 is None
-            and wo_0 is None
-            and (w1 is None or np.asarray(w1).ndim == 2)
-        ):
+        if w1 is not None and _ops.asarray(w1).ndim == 2:
             ffn = TransformerFeedForward(
                 input_dims=self.input_dims,
                 hidden_dims=self.hidden_dims,
@@ -359,7 +396,7 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
             )
             return ffn(x, paddings=paddings, w1=w1, w2=w2)
 
-        ln = instantiate_layer(self.ln_tpl, LayerNorm(dim=in_d))
+        ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=in_d))
         normed = ln(x) if self.norm_policy == "pre" else x
 
         gw_t = self.get_variable("gate_w", (in_d, n_exp), explicit=gate_w)
@@ -368,30 +405,39 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
         wi_t = self.get_variable("wi_0", (n_exp, in_d, hid_d), explicit=wi_raw)
         wo_t = self.get_variable("wo_0", (n_exp, hid_d, in_d), explicit=wo_raw)
 
-        router_logits = np.einsum("...d,de->...e", normed, gw_t)
+        router_logits = _ops.einsum("...d,de->...e", normed, gw_t)
         if self.gating_logit_cap > 0.0:
-            router_logits = self.gating_logit_cap * np.tanh(router_logits / self.gating_logit_cap)
+            router_logits = self.gating_logit_cap * _ops.tanh(router_logits / self.gating_logit_cap)
 
-        max_r = np.max(router_logits, axis=-1, keepdims=True)
-        exp_r = np.exp(router_logits - max_r)
-        gates = exp_r / np.maximum(np.sum(exp_r, axis=-1, keepdims=True), 1e-12)
+        max_r = _ops.max(router_logits, axis=-1, keepdims=True)
+        exp_r = _ops.exp(router_logits - max_r)
+        gates = exp_r / _ops.maximum(_ops.sum(exp_r, axis=-1, keepdims=True), 1e-12)
 
-        if self.gating_func.lower() == "top1" and n_exp > 1:
-            top1_idx = np.argmax(gates, axis=-1, keepdims=True)
-            top1_mask = (top1_idx == np.arange(n_exp)) * 1.0
+        gfunc = self.gating_func.lower()
+        if (gfunc == "top1" or self.second_expert_policy == "none") and n_exp > 1:
+            top1_idx = _ops.argmax(gates, axis=-1, keepdims=True)
+            top1_mask = (top1_idx == _ops.arange(n_exp)) * 1.0
             gates = gates * top1_mask
+        elif gfunc == "top2" and n_exp > 2:
+            top1_idx = _ops.argmax(gates, axis=-1, keepdims=True)
+            top1_mask = (top1_idx == _ops.arange(n_exp)) * 1.0
+            masked_second = _ops.where(top1_mask > 0.0, -1.0, gates)
+            top2_idx = _ops.argmax(masked_second, axis=-1, keepdims=True)
+            top2_mask = (top2_idx == _ops.arange(n_exp)) * 1.0
+            gates = gates * (top1_mask + top2_mask)
 
-        act_fn = instantiate_layer(self.activation_tpl, ReLU())
-        expert_hidden = act_fn(np.einsum("...d,edf->...ef", normed, wi_t))
-        expert_out = np.einsum("...ef,efd->...ed", expert_hidden, wo_t)
-        combined = np.einsum("...e,...ed->...d", gates, expert_out) * self.residual_weight
+        act_fn = self.get_sublayer("activation", self.activation_tpl, ReLU())
+        pre_act = _ops.einsum("...d,edf->...ef", normed, wi_t)
+        expert_hidden = act_fn(pre_act) * pre_act if self.use_gated_activation else act_fn(pre_act)
+        expert_out = _ops.einsum("...ef,efd->...ed", expert_hidden, wo_t)
+        combined = _ops.einsum("...e,...ed->...d", gates, expert_out) * self.residual_weight
 
         out = x + combined if self.add_skip_connection else combined
         if self.norm_policy == "post":
             out = ln(out)
         if paddings is not None:
-            pad_t = np.asarray(paddings)
-            out = out * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            out = out * (1.0 - _ops.expand_dims(pad_t, -1))
         return out
 
 
@@ -470,7 +516,7 @@ class Transformer(BasePraxisLayer):
         Returns:
             Transformed sequence `Tensor` of shape `[B, T, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_model = (
             self.model_dims
             if self.model_dims > 0
@@ -484,14 +530,17 @@ class Transformer(BasePraxisLayer):
             else max(1, d_model // n_heads)
         )
 
-        ln1 = instantiate_layer(self.ln_tpl, LayerNorm(dim=d_model))
+        ln1 = self.get_sublayer("ln1", self.ln_tpl, LayerNorm(dim=d_model))
         default_self_attn = DotProductAttention(
             input_dim=d_model,
             num_heads=n_heads,
             dim_per_head=h_dim,
+            atten_dropout_prob=self.atten_dropout_prob
+            if self.atten_dropout_prob is not None
+            else self.dropout_prob,
             params_init=self.params_init,
         )
-        self_attn = instantiate_layer(self.tr_atten_tpl, default_self_attn)
+        self_attn = self.get_sublayer("self_atten", self.tr_atten_tpl, default_self_attn)
 
         eff_mask: TensorOrScalar | None = atten_mask
         if eff_mask is None and self.mask_self_attention and x.ndim >= 2:
@@ -499,7 +548,7 @@ class Transformer(BasePraxisLayer):
 
         normed_x = ln1(x) if self.norm_policy in ("pre", "primer_hybrid") else x
         if self.ngrammer_tpl is not None:
-            ngrammer = instantiate_layer(self.ngrammer_tpl, Identity())
+            ngrammer = self.get_sublayer("ngrammer", self.ngrammer_tpl, Identity())
             normed_x = ngrammer(normed_x)
 
         atten_out = (
@@ -512,10 +561,10 @@ class Transformer(BasePraxisLayer):
             x = ln1(x)
 
         if self.use_cross_attention and cross_inputs is not None:
-            ln_cross = instantiate_layer(self.ln_tpl, LayerNorm(dim=d_model))
-            cross_mem = np.asarray(cross_inputs)
+            ln_cross = self.get_sublayer("ln_cross", self.ln_tpl, LayerNorm(dim=d_model))
+            cross_mem = _ops.asarray(cross_inputs)
             normed_q = ln_cross(x) if self.norm_policy in ("pre", "primer_hybrid") else x
-            cross_attn = instantiate_layer(self.cross_atten_tpl, default_self_attn)
+            cross_attn = self.get_sublayer("cross_atten", self.cross_atten_tpl, default_self_attn)
             cross_out = (
                 cross_attn(normed_q, cross_mem, cross_mem, atten_mask=cross_atten_mask)
                 if isinstance(cross_attn, DotProductAttention)
@@ -530,9 +579,16 @@ class Transformer(BasePraxisLayer):
             hidden_dims=f_hid,
             norm_policy=self.norm_policy,
             ln_tpl=self.ln_tpl,
+            relu_dropout_prob=self.relu_dropout_prob
+            if self.relu_dropout_prob is not None
+            else self.dropout_prob,
+            residual_dropout_prob=self.residual_dropout_prob
+            if self.residual_dropout_prob is not None
+            else self.dropout_prob,
+            residual_droppath_prob=self.residual_droppath_prob,
             params_init=self.params_init,
         )
-        ffn = instantiate_layer(self.tr_fflayer_tpl, default_ffn)
+        ffn = self.get_sublayer("fflayer", self.tr_fflayer_tpl, default_ffn)
         out = ffn(x, paddings=paddings) if isinstance(ffn, TransformerFeedForward) else ffn(x)
         return out
 
@@ -626,7 +682,7 @@ class StackedTransformer(BasePraxisLayer):
         Returns:
             Output sequence `Tensor` of shape `[B, T, D]`.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         n_layers = self.num_layers if self.num_layers > 0 else 1
         d_model = self.model_dims if self.model_dims > 0 else out.shape[-1]
         f_hid = self.hidden_dims if self.hidden_dims > 0 else 4 * d_model
@@ -646,6 +702,8 @@ class StackedTransformer(BasePraxisLayer):
                     hidden_dims=f_hid,
                     num_experts=max(1, self.num_experts),
                     num_groups=self.num_groups,
+                    gating_func=self.gating_func,
+                    unadjusted_expert_capacity_factor=self.unadjusted_expert_capacity_factor,
                     params_init=self.params_init,
                 )
             default_block = Transformer(
@@ -653,6 +711,11 @@ class StackedTransformer(BasePraxisLayer):
                 hidden_dims=f_hid,
                 num_heads=n_heads,
                 dim_per_head=self.dim_per_head,
+                dropout_prob=self.dropout_prob,
+                atten_dropout_prob=self.atten_dropout_prob,
+                relu_dropout_prob=self.relu_dropout_prob,
+                residual_dropout_prob=self.residual_dropout_prob,
+                residual_droppath_prob=self.residual_droppath_prob,
                 use_cross_attention=self.use_cross_attention,
                 mask_self_attention=self.mask_self_attention or self.autoregressive,
                 tr_fflayer_tpl=ff_tpl,
@@ -663,9 +726,16 @@ class StackedTransformer(BasePraxisLayer):
                 tpl_item = self.transformer_layer_params_tpl[
                     layer_idx % len(self.transformer_layer_params_tpl)
                 ]
-                block = instantiate_layer(tpl_item, default_block)
+                block = instantiate_layer(
+                    tpl_item, default_block, parent=self, name=f"layer_{layer_idx}"
+                )
             else:
-                block = instantiate_layer(self.transformer_layer_params_tpl, default_block)
+                block = instantiate_layer(
+                    self.transformer_layer_params_tpl,
+                    default_block,
+                    parent=self,
+                    name=f"layer_{layer_idx}",
+                )
 
             out = (
                 block(
@@ -742,10 +812,14 @@ class StackedTransformerRepeated(BasePraxisLayer):
         Returns:
             Repeatedly transformed sequence `Tensor`.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         iters = self.x_times if self.x_times > 0 else 1
         tpl = self.block if self.block is not None else self.sub_tpl
-        blk = instantiate_layer(tpl, StackedTransformer(num_layers=1, params_init=self.params_init))
+        blk = self.get_sublayer(
+            self.repeat_layer_name or "repeat",
+            tpl,
+            StackedTransformer(num_layers=max(1, self.num_layers), params_init=self.params_init),
+        )
         for _ in range(iters):
             out = (
                 blk(
@@ -807,8 +881,9 @@ class PipelinedTransformer(BasePraxisLayer):
         Returns:
             Pipelined Transformer output `Tensor`.
         """
-        out = np.asarray(inputs)
-        stage = instantiate_layer(
+        out = self._to_tensor(inputs)
+        stage = self.get_sublayer(
+            "pipeline_stage",
             self.pipeline_stage,
             StackedTransformer(num_layers=1, params_init=self.params_init),
         )
@@ -885,18 +960,20 @@ class TransformerLm(BasePraxisLayer):
         Returns:
             Output logits or hidden representations `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_model = self.model_dims if self.model_dims > 0 else (x.shape[-1] if x.ndim >= 3 else 8)
         v_sz = self.vocab_size if self.vocab_size > 0 else d_model
 
         default_softmax = SharedEmbeddingSoftmax(
             input_dims=d_model, num_classes=v_sz, params_init=self.params_init
         )
-        softmax_layer = instantiate_layer(self.softmax_tpl, default_softmax)
+        softmax_layer = self.get_sublayer("softmax", self.softmax_tpl, default_softmax)
 
         if x.ndim == 2:
             if self.separate_embedding_tpl is not None:
-                sep_emb = instantiate_layer(self.separate_embedding_tpl, Identity())
+                sep_emb = self.get_sublayer(
+                    "separate_embedding", self.separate_embedding_tpl, Identity()
+                )
                 emb = sep_emb(x)
             elif isinstance(softmax_layer, SharedEmbeddingSoftmax):
                 emb = softmax_layer.emb_lookup(x)
@@ -905,8 +982,10 @@ class TransformerLm(BasePraxisLayer):
         else:
             emb = x
 
-        pos_emb = instantiate_layer(
-            self.position_emb_tpl, PositionalEmbedding(embedding_dims=d_model)
+        pos_emb = self.get_sublayer(
+            "position_emb",
+            self.position_emb_tpl,
+            PositionalEmbedding(embedding_dims=d_model),
         )
         pe = (
             pos_emb(seq_length=emb.shape[1], position=segment_pos)
@@ -916,24 +995,30 @@ class TransformerLm(BasePraxisLayer):
         hidden = emb + pe
 
         if self.ngrammer_tpl is not None:
-            ngrammer = instantiate_layer(self.ngrammer_tpl, Identity())
+            ngrammer = self.get_sublayer("ngrammer", self.ngrammer_tpl, Identity())
             hidden = ngrammer(hidden)
 
-        is_causal = self.model_type.lower() == "causal"
+        mode_lower = self.model_type.lower()
+        is_causal = mode_lower == "causal"
+        eff_mask: TensorOrScalar | None = causal_attention_mask
+        if eff_mask is None and mode_lower == "prefix" and hidden.ndim >= 2:
+            eff_mask = _build_prefix_mask(hidden.shape[1])
+
         default_stack = StackedTransformer(
             num_layers=1,
             model_dims=d_model,
             mask_self_attention=is_causal,
+            ngrammer_tpls=self.post_attention_ngrammer_tpls,
             params_init=self.params_init,
         )
-        stack = instantiate_layer(self.stacked_transformer_tpl, default_stack)
+        stack = self.get_sublayer("transformer", self.stacked_transformer_tpl, default_stack)
         hidden = (
-            stack(hidden, paddings=paddings, segment_mask=causal_attention_mask)
+            stack(hidden, paddings=paddings, segment_mask=eff_mask)
             if isinstance(stack, StackedTransformer)
             else stack(hidden)
         )
 
-        final_ln = instantiate_layer(self.final_ln_tpl, LayerNorm(dim=d_model))
+        final_ln = self.get_sublayer("final_ln", self.final_ln_tpl, LayerNorm(dim=d_model))
         hidden = final_ln(hidden)
 
         if self.skip_compute_loss:
@@ -997,9 +1082,9 @@ class TransformerEncoderDecoder(BasePraxisLayer):
         """Encode `inputs` and decode `targets` (or `inputs` if `targets` is None) with cross-attention.
 
         Args:
-            inputs: Encoder input tensor of shape `[B, S, D]`.
+            inputs: Encoder input tensor of shape `[B, S, D]` or token IDs `[B, S]`.
             input_paddings: Optional encoder padding mask of shape `[B, S]`.
-            targets: Optional decoder input tensor of shape `[B, T, D]`.
+            targets: Optional decoder input tensor of shape `[B, T, D]` or token IDs `[B, T]`.
             target_paddings: Optional decoder padding mask of shape `[B, T]`.
             *args: Additional positional arguments.
             **kwargs: Additional keyword arguments.
@@ -1007,15 +1092,25 @@ class TransformerEncoderDecoder(BasePraxisLayer):
         Returns:
             Decoded sequence `Tensor` of shape `[B, T, D]`.
         """
-        enc_in = np.asarray(inputs)
-        dec_in = enc_in if targets is None else np.asarray(targets)
+        enc_in = self._to_tensor(inputs)
+        dec_in = enc_in if targets is None else self._to_tensor(targets)
+
+        if self.encoder_embedding_tpl is not None:
+            enc_emb_layer = self.get_sublayer("encoder_emb", self.encoder_embedding_tpl, Identity())
+            enc_in = enc_emb_layer(enc_in)
+        if self.decoder_embedding_tpl is not None:
+            dec_emb_layer = self.get_sublayer("decoder_emb", self.decoder_embedding_tpl, Identity())
+            dec_in = dec_emb_layer(dec_in)
+
         d_model = self.model_dims if self.model_dims > 0 else enc_in.shape[-1]
 
-        enc_pe = instantiate_layer(
+        enc_pe = self.get_sublayer(
+            "encoder_pe",
             self.encoder_position_emb_tpl or self.position_emb_tpl,
             PositionalEmbedding(embedding_dims=d_model),
         )
-        dec_pe = instantiate_layer(
+        dec_pe = self.get_sublayer(
+            "decoder_pe",
             self.decoder_position_emb_tpl or self.position_emb_tpl,
             PositionalEmbedding(embedding_dims=d_model),
         )
@@ -1030,45 +1125,59 @@ class TransformerEncoderDecoder(BasePraxisLayer):
             else dec_pe(dec_in)
         )
 
-        enc_stack = instantiate_layer(
+        enc_hidden = enc_in + enc_pos
+        if self.encoder_ngrammer_tpl is not None:
+            enc_ng = self.get_sublayer("encoder_ngrammer", self.encoder_ngrammer_tpl, Identity())
+            enc_hidden = enc_ng(enc_hidden)
+
+        enc_stack = self.get_sublayer(
+            "encoder_stack",
             self.encoder_stacked_transformer_tpl,
             StackedTransformer(
                 num_layers=1,
                 model_dims=d_model,
                 use_cross_attention=False,
+                ngrammer_tpls=self.encoder_post_attention_ngrammer_tpls,
                 params_init=self.params_init,
             ),
         )
-        enc_ln = instantiate_layer(self.encoder_ln_tpl, LayerNorm(dim=d_model))
+        enc_ln = self.get_sublayer("encoder_ln", self.encoder_ln_tpl, LayerNorm(dim=d_model))
         enc_out = enc_ln(
-            enc_stack(enc_in + enc_pos, paddings=input_paddings)
+            enc_stack(enc_hidden, paddings=input_paddings)
             if isinstance(enc_stack, StackedTransformer)
-            else enc_stack(enc_in + enc_pos)
+            else enc_stack(enc_hidden)
         )
 
-        dec_stack = instantiate_layer(
+        dec_hidden = dec_in + dec_pos
+        if self.decoder_ngrammer_tpl is not None:
+            dec_ng = self.get_sublayer("decoder_ngrammer", self.decoder_ngrammer_tpl, Identity())
+            dec_hidden = dec_ng(dec_hidden)
+
+        dec_stack = self.get_sublayer(
+            "decoder_stack",
             self.decoder_stacked_transformer_tpl,
             StackedTransformer(
                 num_layers=1,
                 model_dims=d_model,
                 use_cross_attention=True,
                 mask_self_attention=True,
+                ngrammer_tpls=self.decoder_post_attention_ngrammer_tpls,
                 params_init=self.params_init,
             ),
         )
-        dec_ln = instantiate_layer(self.decoder_ln_tpl, LayerNorm(dim=d_model))
+        dec_ln = self.get_sublayer("decoder_ln", self.decoder_ln_tpl, LayerNorm(dim=d_model))
         dec_out = dec_ln(
             dec_stack(
-                dec_in + dec_pos,
+                dec_hidden,
                 paddings=target_paddings,
                 cross_inputs=enc_out,
                 cross_paddings=input_paddings,
             )
             if isinstance(dec_stack, StackedTransformer)
-            else dec_stack(dec_in + dec_pos)
+            else dec_stack(dec_hidden)
         )
         if self.softmax_tpl is not None:
-            sm = instantiate_layer(self.softmax_tpl, Identity())
+            sm = self.get_sublayer("softmax", self.softmax_tpl, Identity())
             return sm(dec_out)
         return dec_out
 
@@ -1116,7 +1225,8 @@ class LanguageModel(BasePraxisLayer):
         Returns:
             Language model output `Tensor`.
         """
-        lm = instantiate_layer(
+        lm = self.get_sublayer(
+            "lm",
             self.lm_tpl,
             TransformerLm(model_type=self.model_type, params_init=self.params_init),
         )
@@ -1170,31 +1280,31 @@ class LanguageModelDPO(BasePraxisLayer):
         Returns:
             Policy model output `Tensor`, or DPO preference loss `Tensor` if `rejected_inputs` is given.
         """
-        policy_fn = instantiate_layer(self.mdl, TransformerLm(params_init=self.params_init))
+        policy_fn = self.get_sublayer("mdl", self.mdl, TransformerLm(params_init=self.params_init))
         chosen_out = policy_fn(inputs)
         if rejected_inputs is None:
             return chosen_out
 
         rejected_out = policy_fn(rejected_inputs)
-        pi_logratios = np.mean(chosen_out, axis=-1) - np.mean(rejected_out, axis=-1)
+        pi_logratios = _ops.mean(chosen_out, axis=-1) - _ops.mean(rejected_out, axis=-1)
 
         if self.use_ref_model and self.ref_mdl is not None:
-            ref_fn = instantiate_layer(self.ref_mdl, Identity())
+            ref_fn = self.get_sublayer("ref_mdl", self.ref_mdl, Identity())
             ref_chosen = ref_fn(inputs)
             ref_rejected = ref_fn(rejected_inputs)
-            ref_logratios = np.mean(ref_chosen, axis=-1) - np.mean(ref_rejected, axis=-1)
+            ref_logratios = _ops.mean(ref_chosen, axis=-1) - _ops.mean(ref_rejected, axis=-1)
         else:
-            ref_logratios = np.zeros_like(pi_logratios)
+            ref_logratios = _ops.zeros_like(pi_logratios)
 
         logits = self.beta * (pi_logratios - ref_logratios)
         if self.loss_type.lower() == "ipo":
-            return np.square(logits - 1.0 / (2.0 * max(self.beta, 1e-6)))
+            return _ops.square(logits - 1.0 / (2.0 * max(self.beta, 1e-6)))
         if self.loss_type.lower() == "hinge":
-            return np.maximum(0.0, 1.0 - logits)
+            return _ops.maximum(0.0, 1.0 - logits)
 
-        pos_loss = np.maximum(-logits, 0.0) + np.log1p(np.exp(-np.abs(logits)))
+        pos_loss = _ops.maximum(-logits, 0.0) + _ops.log1p(_ops.exp(-_ops.abs(logits)))
         if self.label_smoothing > 0.0:
-            neg_loss = np.maximum(logits, 0.0) + np.log1p(np.exp(-np.abs(logits)))
+            neg_loss = _ops.maximum(logits, 0.0) + _ops.log1p(_ops.exp(-_ops.abs(logits)))
             return (1.0 - self.label_smoothing) * pos_loss + self.label_smoothing * neg_loss
         return pos_loss
 
@@ -1230,8 +1340,10 @@ class SequenceModel(BasePraxisLayer):
         Returns:
             Sequence model output `Tensor`.
         """
-        seq_mdl = instantiate_layer(
-            self.model_tpl, TransformerEncoderDecoder(params_init=self.params_init)
+        seq_mdl = self.get_sublayer(
+            "model",
+            self.model_tpl,
+            TransformerEncoderDecoder(params_init=self.params_init),
         )
         return seq_mdl(inputs)
 
@@ -1273,11 +1385,18 @@ class BertModel(BasePraxisLayer):
         Returns:
             Contextualized bidirectional representations `Tensor`.
         """
-        lm = instantiate_layer(
+        x = self._to_tensor(inputs)
+        if self.mlm_augmenter_tpl is not None:
+            aug = self.get_sublayer("mlm_augmenter", self.mlm_augmenter_tpl, Identity())
+            aug_res = aug(x)
+            x = aug_res[0] if isinstance(aug_res, tuple) else aug_res
+
+        lm = self.get_sublayer(
+            "lm",
             self.lm_tpl,
             TransformerLm(model_type="bidirectional", params_init=self.params_init),
         )
-        return lm(inputs, paddings=paddings) if isinstance(lm, TransformerLm) else lm(inputs)
+        return lm(x, paddings=paddings) if isinstance(lm, TransformerLm) else lm(x)
 
 
 __all__ = [

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 
-from zero_pax import _tensor_ops as np
-from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
+from zero_pax import _tensor_ops as _ops
+from zero_pax.praxis.base import BasePraxisLayer, LayerTpl
 from zero_pax.praxis.layers.activations import Identity
 from zero_pax.praxis.layers.convolutions import CausalDepthwiseConv1D
-from zero_pax.praxis.layers.linear_pooling import EinsumOp
+from zero_pax.praxis.layers.linear_pooling import EinsumOp, PerDimScale
 from zero_pax.praxis.layers.normalizations import LayerNorm
 from zero_pax.types import Tensor, TensorOrScalar, WeightInit
 
@@ -32,20 +32,20 @@ def _apply_rotary_position_emb(
     half_dim = head_dim // 2
     if half_dim == 0:
         return inputs
-    fraction = 2.0 * np.arange(0, half_dim) / float(head_dim)
+    fraction = 2.0 * _ops.arange(0, half_dim) / float(head_dim)
     timescale = float(min_timescale) * ((float(max_timescale) / float(min_timescale)) ** fraction)
-    positions = np.reshape(np.arange(0, seq_len), (1, seq_len, 1, 1))
-    sinusoid_inp = positions / np.reshape(timescale, (1, 1, 1, half_dim))
-    sin = np.sin(sinusoid_inp)
-    cos = np.cos(sinusoid_inp)
+    positions = _ops.reshape(_ops.arange(0, seq_len), (1, seq_len, 1, 1))
+    sinusoid_inp = positions / _ops.reshape(timescale, (1, 1, 1, half_dim))
+    sin = _ops.sin(sinusoid_inp)
+    cos = _ops.cos(sinusoid_inp)
 
     first_half = inputs[:, :, :, :half_dim]
     second_half = inputs[:, :, :, half_dim : 2 * half_dim]
     rot_first = first_half * cos - second_half * sin
     rot_second = second_half * cos + first_half * sin
-    rotated = np.concatenate([rot_first, rot_second], axis=-1)
+    rotated = _ops.concatenate([rot_first, rot_second], axis=-1)
     if head_dim % 2 == 1:
-        rotated = np.concatenate([rotated, inputs[:, :, :, 2 * half_dim :]], axis=-1)
+        rotated = _ops.concatenate([rotated, inputs[:, :, :, 2 * half_dim :]], axis=-1)
     return rotated
 
 
@@ -58,11 +58,11 @@ def _normalize_attention_mask(atten_mask: TensorOrScalar) -> Tensor:
     Returns:
         4D broadcast-compatible attention mask `Tensor`.
     """
-    mask_t = np.asarray(atten_mask)
+    mask_t = _ops.asarray(atten_mask)
     if mask_t.ndim == 2:
-        return np.reshape(mask_t, (1, 1, mask_t.shape[0], mask_t.shape[1]))
+        return _ops.reshape(mask_t, (1, 1, mask_t.shape[0], mask_t.shape[1]))
     if mask_t.ndim == 3:
-        return np.expand_dims(mask_t, 1)
+        return _ops.expand_dims(mask_t, 1)
     return mask_t
 
 
@@ -111,7 +111,7 @@ class AttentionProjection(BasePraxisLayer):
         Returns:
             Projected `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         n_heads = self.num_heads if self.num_heads > 0 else 1
 
         if self.is_output_projection:
@@ -122,14 +122,20 @@ class AttentionProjection(BasePraxisLayer):
             if w is None:
                 w_t = self.get_variable("w", (n_heads, h_dim, d_dim))
             else:
-                w_raw = np.asarray(w)
+                w_raw = _ops.asarray(w)
                 w_t = (
-                    np.reshape(w_raw, (n_heads, h_dim, d_dim))
+                    _ops.reshape(w_raw, (n_heads, h_dim, d_dim))
                     if w_raw.shape != (n_heads, h_dim, d_dim)
                     else w_raw
                 )
-            op_out = instantiate_layer(self.einsum_tpl, EinsumOp(equation="...nh,nhd->...d"))
-            out = op_out("...nh,nhd->...d", x, w_t)
+            op_out = self.get_sublayer(
+                "einsum_out", self.einsum_tpl, EinsumOp(equation="...nh,nhd->...d")
+            )
+            out = (
+                op_out("...nh,nhd->...d", x, w_t)
+                if isinstance(op_out, EinsumOp)
+                else op_out(x, w_t)
+            )
             if self.use_bias:
                 b_t = self.get_variable("b", (d_dim,), explicit=b)
                 out = out + b_t
@@ -140,27 +146,29 @@ class AttentionProjection(BasePraxisLayer):
         if w is None:
             w_t = self.get_variable("w", (d_dim, n_heads, h_dim))
         else:
-            w_raw = np.asarray(w)
+            w_raw = _ops.asarray(w)
             w_t = (
-                np.reshape(w_raw, (d_dim, n_heads, h_dim))
+                _ops.reshape(w_raw, (d_dim, n_heads, h_dim))
                 if w_raw.shape != (d_dim, n_heads, h_dim)
                 else w_raw
             )
-        op_in = instantiate_layer(self.einsum_tpl, EinsumOp(equation="...d,dnh->...nh"))
-        out = op_in("...d,dnh->...nh", x, w_t)
+        op_in = self.get_sublayer(
+            "einsum_in", self.einsum_tpl, EinsumOp(equation="...d,dnh->...nh")
+        )
+        out = op_in("...d,dnh->...nh", x, w_t) if isinstance(op_in, EinsumOp) else op_in(x, w_t)
         if self.use_bias:
             if b is None:
                 b_t = self.get_variable("b", (n_heads, h_dim))
             else:
-                b_raw = np.asarray(b)
+                b_raw = _ops.asarray(b)
                 b_t = (
-                    np.reshape(b_raw, (n_heads, h_dim))
+                    _ops.reshape(b_raw, (n_heads, h_dim))
                     if b_raw.shape != (n_heads, h_dim)
                     else b_raw
                 )
             out = out + b_t
         if self.attention_combine_dims:
-            out = np.reshape(out, list(out.shape[:-2]) + [n_heads * h_dim])
+            out = _ops.reshape(out, list(out.shape[:-2]) + [n_heads * h_dim])
         return out
 
 
@@ -196,25 +204,25 @@ class RelativeBias(BasePraxisLayer):
         """
         num_buckets = max(2, self.relative_attention_num_buckets)
         max_distance = max(1, self.relative_attention_max_distance)
-        ret = np.zeros_like(relative_position)
+        ret = _ops.zeros_like(relative_position)
         n = -relative_position
 
         if self.bidirectional:
             num_buckets = num_buckets // 2
-            ret = ret + np.where(n < 0.0, float(num_buckets), 0.0)
-            n = np.abs(n)
+            ret = ret + _ops.where(n < 0.0, float(num_buckets), 0.0)
+            n = _ops.abs(n)
         else:
-            n = np.maximum(n, 0.0)
+            n = _ops.maximum(n, 0.0)
 
         max_exact = max(1, num_buckets // 2)
         is_small = n < float(max_exact)
-        n_safe = np.maximum(n, 1.0)
+        n_safe = _ops.maximum(n, 1.0)
         denom = math.log(max(float(max_distance) / float(max_exact), 1.0001))
         val_if_large = float(max_exact) + (
-            np.log(n_safe / float(max_exact)) / denom * float(num_buckets - max_exact)
+            _ops.log(n_safe / float(max_exact)) / denom * float(num_buckets - max_exact)
         )
-        val_if_large = np.minimum(val_if_large, float(num_buckets - 1))
-        return ret + np.where(is_small, n, val_if_large)
+        val_if_large = _ops.minimum(val_if_large, float(num_buckets - 1))
+        return ret + _ops.where(is_small, n, val_if_large)
 
     def __call__(
         self,
@@ -238,35 +246,35 @@ class RelativeBias(BasePraxisLayer):
         """
         q_pos: Tensor
         if isinstance(query_segment_pos, int):
-            q_pos = np.expand_dims(np.arange(query_segment_pos), 0)
+            q_pos = _ops.expand_dims(_ops.arange(query_segment_pos), 0)
         else:
-            q_arr = np.asarray(query_segment_pos)
-            q_pos = np.expand_dims(q_arr, 0) if q_arr.ndim == 1 else q_arr
+            q_arr = _ops.asarray(query_segment_pos)
+            q_pos = _ops.expand_dims(q_arr, 0) if q_arr.ndim == 1 else q_arr
 
         k_pos: Tensor
         if key_segment_pos is None:
             k_pos = q_pos
         elif isinstance(key_segment_pos, int):
-            k_pos = np.expand_dims(np.arange(key_segment_pos), 0)
+            k_pos = _ops.expand_dims(_ops.arange(key_segment_pos), 0)
         else:
-            k_arr = np.asarray(key_segment_pos)
-            k_pos = np.expand_dims(k_arr, 0) if k_arr.ndim == 1 else k_arr
+            k_arr = _ops.asarray(key_segment_pos)
+            k_pos = _ops.expand_dims(k_arr, 0) if k_arr.ndim == 1 else k_arr
 
-        rel_pos = np.expand_dims(k_pos, 1) - np.expand_dims(q_pos, 2)
+        rel_pos = _ops.expand_dims(k_pos, 1) - _ops.expand_dims(q_pos, 2)
         buckets = self._relative_position_bucket(rel_pos)
 
         n_heads = max(1, self.num_heads)
         n_buckets = max(2, self.relative_attention_num_buckets)
-        rb_init = (
-            WeightInit(method="xavier", scale=self.rb_stddev or 1.0)
-            if self.use_xavier_init
-            else None
-        )
+        rb_init: WeightInit | None = None
+        if self.use_xavier_init:
+            rb_init = WeightInit(method="xavier", scale=self.rb_stddev or 1.0)
+        elif self.rb_stddev is not None:
+            rb_init = WeightInit(method="normal", scale=self.rb_stddev)
         w_t = self.get_variable("w", (n_heads, n_buckets), explicit=w, init=rb_init)
 
-        bucket_idx = np.clip(buckets, 0, n_buckets - 1)
-        one_hot = np.reshape(bucket_idx, list(bucket_idx.shape) + [1]) == np.arange(n_buckets)
-        return np.einsum("bqkc,nc->bnqk", one_hot, w_t)
+        bucket_idx = _ops.clip(buckets, 0, n_buckets - 1)
+        one_hot = _ops.reshape(bucket_idx, list(bucket_idx.shape) + [1]) == _ops.arange(n_buckets)
+        return _ops.einsum("bqkc,nc->bnqk", one_hot, w_t)
 
 
 class DotProductAttention(BasePraxisLayer):
@@ -412,19 +420,24 @@ class DotProductAttention(BasePraxisLayer):
         Returns:
             Attended output `Tensor` of shape `[B, T_q, D]`.
         """
-        q_in = np.asarray(query_vec)
-        k_in = q_in if key_vec is None else np.asarray(key_vec)
-        v_in = q_in if value_vec is None else np.asarray(value_vec)
+        q_in = self._to_tensor(query_vec)
+        k_in = q_in if key_vec is None else self._to_tensor(key_vec)
+        v_in = q_in if value_vec is None else self._to_tensor(value_vec)
 
         if self.dconv_qkv:
             k_sz = max(1, self.dconv_kernel_size)
-            dconv_layer = instantiate_layer(
+            dconv_layer = self.get_sublayer(
+                "dconv_qkv",
                 self.causal_depthwise_conv1d_tpl,
                 CausalDepthwiseConv1D(kernel_size=k_sz, params_init=self.params_init),
             )
             q_in = dconv_layer(q_in)
             k_in = dconv_layer(k_in)
             v_in = dconv_layer(v_in)
+
+        if self.ngrammer_tpl is not None:
+            ngrammer = self.get_sublayer("ngrammer", self.ngrammer_tpl, Identity())
+            v_in = ngrammer(v_in)
 
         d_dim = self.input_dim if self.input_dim > 0 else q_in.shape[-1]
         n_heads = self.num_heads if self.num_heads > 0 else 1
@@ -434,43 +447,76 @@ class DotProductAttention(BasePraxisLayer):
             else (self.hidden_dim // n_heads if self.hidden_dim > 0 else max(1, d_dim // n_heads))
         )
 
-        proj_q = AttentionProjection(
-            input_dim=d_dim,
-            num_heads=n_heads,
-            dim_per_head=h_dim,
-            is_output_projection=False,
-            use_bias=self.use_bias,
-            params_init=self.params_init,
+        proj_q = self.get_sublayer(
+            "query",
+            self.proj_tpl,
+            AttentionProjection(
+                input_dim=d_dim,
+                num_heads=n_heads,
+                dim_per_head=h_dim,
+                is_output_projection=False,
+                use_bias=self.use_bias,
+                params_init=self.params_init,
+            ),
         )
-        proj_k = AttentionProjection(
-            input_dim=d_dim,
-            num_heads=n_heads,
-            dim_per_head=h_dim,
-            is_output_projection=False,
-            use_bias=self.use_bias,
-            params_init=self.params_init,
+        proj_k = self.get_sublayer(
+            "key",
+            self.proj_tpl,
+            AttentionProjection(
+                input_dim=d_dim,
+                num_heads=n_heads,
+                dim_per_head=h_dim,
+                is_output_projection=False,
+                use_bias=self.use_bias,
+                params_init=self.params_init,
+            ),
         )
-        proj_v = AttentionProjection(
-            input_dim=d_dim,
-            num_heads=n_heads,
-            dim_per_head=h_dim,
-            is_output_projection=False,
-            use_bias=self.use_bias,
-            params_init=self.params_init,
+        proj_v = self.get_sublayer(
+            "value",
+            self.proj_tpl,
+            AttentionProjection(
+                input_dim=d_dim,
+                num_heads=n_heads,
+                dim_per_head=h_dim,
+                is_output_projection=False,
+                use_bias=self.use_bias,
+                params_init=self.params_init,
+            ),
         )
-        proj_post = AttentionProjection(
-            input_dim=d_dim,
-            num_heads=n_heads,
-            dim_per_head=h_dim,
-            is_output_projection=True,
-            use_bias=self.use_bias,
-            use_nhd_shape=self.output_proj_use_nhd_shape,
-            params_init=self.params_init,
+        proj_post = self.get_sublayer(
+            "post",
+            None,
+            AttentionProjection(
+                input_dim=d_dim,
+                num_heads=n_heads,
+                dim_per_head=h_dim,
+                is_output_projection=True,
+                use_bias=self.use_bias,
+                use_nhd_shape=self.output_proj_use_nhd_shape,
+                params_init=self.params_init,
+            ),
         )
 
-        q = proj_q(q_in, w=query_w, b=query_b)
-        k = proj_k(k_in, w=key_w, b=key_b)
-        v = proj_v(v_in, w=value_w, b=value_b)
+        q = (
+            proj_q(q_in, w=query_w, b=query_b)
+            if isinstance(proj_q, AttentionProjection)
+            else proj_q(q_in)
+        )
+        k = (
+            proj_k(k_in, w=key_w, b=key_b)
+            if isinstance(proj_k, AttentionProjection)
+            else proj_k(k_in)
+        )
+        v = (
+            proj_v(v_in, w=value_w, b=value_b)
+            if isinstance(proj_v, AttentionProjection)
+            else proj_v(v_in)
+        )
+
+        if self.ln_tpl is not None:
+            qk_ln = self.get_sublayer("qk_ln", self.ln_tpl, LayerNorm(dim=h_dim))
+            q = qk_ln(q)
+            k = qk_ln(k)
 
         if self.use_rotary_position_emb:
             q = _apply_rotary_position_emb(q)
@@ -481,22 +527,46 @@ class DotProductAttention(BasePraxisLayer):
             or self.scale_query_by_dim_per_head
             or self.scale_query_by_head_dims
         ):
-            scale_vec = (
-                np.ones((h_dim,))
-                if (per_dim_scale is None or not self.internal_enable_per_dim_scale)
-                else np.asarray(per_dim_scale)
-            )
-            q = q * (scale_vec / np.sqrt(float(h_dim)))
+            if self.internal_enable_per_dim_scale and (
+                per_dim_scale is not None or self.per_dim_scale_tpl is not None
+            ):
+                pds_layer = self.get_sublayer(
+                    "per_dim_scale",
+                    self.per_dim_scale_tpl,
+                    PerDimScale(dim=h_dim, params_init=self.params_init),
+                )
+                q = (
+                    pds_layer(q, scale=per_dim_scale)
+                    if isinstance(pds_layer, PerDimScale)
+                    else pds_layer(q)
+                )
+            q = q / _ops.sqrt(float(h_dim))
 
-        logits = np.einsum("btnh,bsnh->bnts", q, k)
+        qk_einsum = self.get_sublayer(
+            "qk_einsum", self.qk_einsum_tpl, EinsumOp(equation="btnh,bsnh->bnts")
+        )
+        logits = (
+            qk_einsum("btnh,bsnh->bnts", q, k)
+            if isinstance(qk_einsum, EinsumOp)
+            else qk_einsum(q, k)
+        )
         if self.scale_logits_by_head_dims:
             logits = logits * (float(h_dim) ** -0.5)
 
         if self.atten_logit_cap > 0.0:
-            logits = self.atten_logit_cap * np.tanh(logits / self.atten_logit_cap)
+            logits = self.atten_logit_cap * _ops.tanh(logits / self.atten_logit_cap)
 
-        if isinstance(self.relative_bias_tpl, RelativeBias):
-            logits = logits + self.relative_bias_tpl(q_in.shape[1], k_in.shape[1])
+        if self.relative_bias_tpl is not None:
+            rb_layer = self.get_sublayer(
+                "relative_bias",
+                self.relative_bias_tpl,
+                RelativeBias(num_heads=n_heads, params_init=self.params_init),
+            )
+            logits = logits + (
+                rb_layer(q_in.shape[1], k_in.shape[1])
+                if isinstance(rb_layer, RelativeBias)
+                else rb_layer(q_in.shape[1])
+            )
 
         xl_bias = self._compute_xl_bias(q_in.shape[1], k_in.shape[1], n_heads)
         if xl_bias is not None:
@@ -511,22 +581,33 @@ class DotProductAttention(BasePraxisLayer):
             norm_mask = _normalize_attention_mask(atten_mask)
             logits = logits + norm_mask
 
-        max_logits = np.max(logits, axis=-1, keepdims=True)
-        exp_logits = np.exp(logits - max_logits)
-        denom = np.sum(exp_logits, axis=-1, keepdims=True)
+        max_logits = _ops.max(logits, axis=-1, keepdims=True)
+        exp_logits = _ops.exp(logits - max_logits)
+        denom = _ops.sum(exp_logits, axis=-1, keepdims=True)
         if self.attention_extra_logit is not None:
-            denom = denom + np.exp(float(self.attention_extra_logit) - max_logits)
-        probs = exp_logits / np.maximum(denom, 1e-12)
+            denom = denom + _ops.exp(float(self.attention_extra_logit) - max_logits)
+        probs = exp_logits / _ops.maximum(denom, 1e-12)
 
         if self.zero_fully_masked and norm_mask is not None:
-            fully_masked = np.max(norm_mask, axis=-1, keepdims=True) < -1e5
-            probs = np.where(fully_masked, 0.0, probs)
+            fully_masked = _ops.max(norm_mask, axis=-1, keepdims=True) < -1e5
+            probs = _ops.where(fully_masked, 0.0, probs)
 
-        drop_layer = instantiate_layer(self.dropout_tpl, Identity())
+        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, Identity())
         probs = drop_layer(probs)
 
-        encoded = np.einsum("bnts,bsnh->btnh", probs, v)
-        return proj_post(encoded, w=post_w, b=post_b)
+        pv_einsum = self.get_sublayer(
+            "pv_einsum", self.pv_einsum_tpl, EinsumOp(equation="bnts,bsnh->btnh")
+        )
+        encoded = (
+            pv_einsum("bnts,bsnh->btnh", probs, v)
+            if isinstance(pv_einsum, EinsumOp)
+            else pv_einsum(probs, v)
+        )
+        return (
+            proj_post(encoded, w=post_w, b=post_b)
+            if isinstance(proj_post, AttentionProjection)
+            else proj_post(encoded)
+        )
 
 
 class DotProductAttentionXL(DotProductAttention):
@@ -551,14 +632,17 @@ class DotProductAttentionXL(DotProductAttention):
         """
         if self.rel_pos_emb_dim <= 0:
             return None
-        q_pos = np.expand_dims(np.arange(q_len), 1)
-        k_pos = np.expand_dims(np.arange(k_len), 0)
+        u_bias = self.get_variable("u_bias", (1, n_heads, 1, 1))
+        v_bias = self.get_variable("v_bias", (1, n_heads, 1, 1))
+        q_pos = _ops.expand_dims(_ops.arange(q_len), 1)
+        k_pos = _ops.expand_dims(_ops.arange(k_len), 0)
         rel_dist = k_pos - q_pos
-        head_slopes = 1.0 / (10000.0 ** (np.arange(n_heads) / max(1.0, float(n_heads))))
-        phase = np.reshape(head_slopes, (1, n_heads, 1, 1)) * np.reshape(
+        head_slopes = 1.0 / (10000.0 ** (_ops.arange(n_heads) / max(1.0, float(n_heads))))
+        phase = _ops.reshape(head_slopes, (1, n_heads, 1, 1)) * _ops.reshape(
             rel_dist, (1, 1, q_len, k_len)
         )
-        return np.cos(phase) * (float(self.rel_pos_emb_dim) ** -0.5)
+        sin_term = _ops.cos(phase) / math.sqrt(float(self.rel_pos_emb_dim))
+        return u_bias + (1.0 + v_bias) * sin_term
 
 
 class DotProductAttentionWithContext(DotProductAttention):
@@ -583,15 +667,15 @@ class DotProductAttentionWithContext(DotProductAttention):
         """
         if self.left_context is None and self.right_context is None:
             return None
-        pos = np.arange(seq_len)
-        diff = np.expand_dims(pos, 0) - np.expand_dims(pos, 1)
-        masked = np.zeros((seq_len, seq_len)) > 1.0
+        pos = _ops.arange(seq_len)
+        diff = _ops.expand_dims(pos, 0) - _ops.expand_dims(pos, 1)
+        masked = _ops.zeros((seq_len, seq_len)) > 1.0
         if self.left_context is not None:
             masked = masked | (diff < -(self.left_context - 1))
         if self.right_context is not None:
             masked = masked | (diff > self.right_context)
-        mask_2d = np.where(masked, -1e9, 0.0)
-        return np.reshape(mask_2d, (1, 1, seq_len, seq_len))
+        mask_2d = _ops.where(masked, -1e9, 0.0)
+        return _ops.reshape(mask_2d, (1, 1, seq_len, seq_len))
 
 
 class DotProductAttentionWithContextXL(DotProductAttentionWithContext, DotProductAttentionXL):
@@ -627,10 +711,10 @@ class LocalSelfAttention(DotProductAttentionWithContext):
         base_mask = super()._compute_context_mask(seq_len)
         if base_mask is not None or self.block_size <= 0:
             return base_mask
-        pos = np.arange(seq_len)
-        diff = np.abs(np.expand_dims(pos, 0) - np.expand_dims(pos, 1))
-        mask_2d = np.where(diff > self.block_size, -1e9, 0.0)
-        return np.reshape(mask_2d, (1, 1, seq_len, seq_len))
+        pos = _ops.arange(seq_len)
+        diff = _ops.abs(_ops.expand_dims(pos, 0) - _ops.expand_dims(pos, 1))
+        mask_2d = _ops.where(diff > self.block_size, -1e9, 0.0)
+        return _ops.reshape(mask_2d, (1, 1, seq_len, seq_len))
 
 
 class LocalSelfAttentionXL(LocalSelfAttention, DotProductAttentionXL):
@@ -659,8 +743,12 @@ class LocalSelfAttentionRelativeBias(LocalSelfAttention):
         """
         if self.relative_bias_tpl is not None:
             return None
-        rb = RelativeBias(num_heads=n_heads, params_init=self.params_init)
-        return rb(q_len, k_len)
+        rb = self.get_sublayer(
+            "default_relative_bias",
+            None,
+            RelativeBias(num_heads=n_heads, params_init=self.params_init),
+        )
+        return rb(q_len, k_len) if isinstance(rb, RelativeBias) else rb(q_len)
 
 
 class LocalSelfAttentionAlibi(LocalSelfAttention):
@@ -676,11 +764,13 @@ class LocalSelfAttentionAlibi(LocalSelfAttention):
             Additive ALiBi + local context bias `Tensor` of shape `(1, N, T, T)`.
         """
         base_mask = super()._compute_context_mask(seq_len)
-        pos = np.arange(seq_len)
-        dist = -np.abs(np.expand_dims(pos, 0) - np.expand_dims(pos, 1))
+        pos = _ops.arange(seq_len)
+        dist = -_ops.abs(_ops.expand_dims(pos, 0) - _ops.expand_dims(pos, 1))
         n_heads = max(1, self.num_heads)
-        slopes = 0.5 ** (np.arange(1, n_heads + 1) * (8.0 / float(n_heads)))
-        alibi = np.reshape(slopes, (1, n_heads, 1, 1)) * np.reshape(dist, (1, 1, seq_len, seq_len))
+        slopes = 0.5 ** (_ops.arange(1, n_heads + 1) * (8.0 / float(n_heads)))
+        alibi = _ops.reshape(slopes, (1, n_heads, 1, 1)) * _ops.reshape(
+            dist, (1, 1, seq_len, seq_len)
+        )
         if base_mask is not None:
             return base_mask + alibi
         return alibi
@@ -755,9 +845,9 @@ class GroupedQueryAttention(BasePraxisLayer):
         Returns:
             Output `Tensor` of shape `[B, T_q, D]`.
         """
-        q_in = np.asarray(query_vec)
-        k_in = q_in if key_vec is None else np.asarray(key_vec)
-        v_in = q_in if value_vec is None else np.asarray(value_vec)
+        q_in = self._to_tensor(query_vec)
+        k_in = q_in if key_vec is None else self._to_tensor(key_vec)
+        v_in = q_in if value_vec is None else self._to_tensor(value_vec)
 
         d_dim = self.input_dim if self.input_dim > 0 else q_in.shape[-1]
         n_heads = max(1, self.num_heads)
@@ -771,17 +861,17 @@ class GroupedQueryAttention(BasePraxisLayer):
         wv_t = self.get_variable("w_v", (d_dim, kv_heads, h_dim), explicit=w_v)
         wo_t = self.get_variable("w_o", (n_heads, h_dim, d_dim), explicit=w_o)
 
-        q = np.einsum("btd,dnh->btnh", q_in, wq_t)
-        k = np.einsum("bsd,dkh->bskh", k_in, wk_t)
-        v = np.einsum("bsd,dkh->bskh", v_in, wv_t)
+        q = _ops.einsum("btd,dnh->btnh", q_in, wq_t)
+        k = _ops.einsum("bsd,dkh->bskh", k_in, wk_t)
+        v = _ops.einsum("bsd,dkh->bskh", v_in, wv_t)
 
         if self.use_bias:
-            if b_q is not None:
-                q = q + np.asarray(b_q)
-            if b_k is not None:
-                k = k + np.asarray(b_k)
-            if b_v is not None:
-                v = v + np.asarray(b_v)
+            bq_t = self.get_variable("b_q", (n_heads, h_dim), explicit=b_q)
+            bk_t = self.get_variable("b_k", (kv_heads, h_dim), explicit=b_k)
+            bv_t = self.get_variable("b_v", (kv_heads, h_dim), explicit=b_v)
+            q = q + bq_t
+            k = k + bk_t
+            v = v + bv_t
 
         if self.rope_min_max_timescales is not None:
             min_ts, max_ts = self.rope_min_max_timescales
@@ -791,30 +881,35 @@ class GroupedQueryAttention(BasePraxisLayer):
         if n_heads != kv_heads:
             repeats = n_heads // kv_heads
             b_sz, s_len, _, _ = k.shape
-            k_exp = np.broadcast_to(np.expand_dims(k, 3), (b_sz, s_len, kv_heads, repeats, h_dim))
-            v_exp = np.broadcast_to(np.expand_dims(v, 3), (b_sz, s_len, kv_heads, repeats, h_dim))
-            k = np.reshape(k_exp, (b_sz, s_len, n_heads, h_dim))
-            v = np.reshape(v_exp, (b_sz, s_len, n_heads, h_dim))
+            k_exp = _ops.broadcast_to(
+                _ops.expand_dims(k, 3), (b_sz, s_len, kv_heads, repeats, h_dim)
+            )
+            v_exp = _ops.broadcast_to(
+                _ops.expand_dims(v, 3), (b_sz, s_len, kv_heads, repeats, h_dim)
+            )
+            k = _ops.reshape(k_exp, (b_sz, s_len, n_heads, h_dim))
+            v = _ops.reshape(v_exp, (b_sz, s_len, n_heads, h_dim))
 
         temp_scale = self.atten_temp if self.atten_temp > 0.0 else 1.0
-        q = q / (np.sqrt(float(h_dim)) * temp_scale)
-        logits = np.einsum("btnh,bsnh->bnts", q, k)
+        q = q / (_ops.sqrt(float(h_dim)) * temp_scale)
+        logits = _ops.einsum("btnh,bsnh->bnts", q, k)
         if self.atten_logit_cap > 0.0:
-            logits = self.atten_logit_cap * np.tanh(logits / self.atten_logit_cap)
+            logits = self.atten_logit_cap * _ops.tanh(logits / self.atten_logit_cap)
         if atten_mask is not None:
             logits = logits + _normalize_attention_mask(atten_mask)
 
-        max_logits = np.max(logits, axis=-1, keepdims=True)
-        exp_logits = np.exp(logits - max_logits)
-        probs = exp_logits / np.maximum(np.sum(exp_logits, axis=-1, keepdims=True), 1e-12)
+        max_logits = _ops.max(logits, axis=-1, keepdims=True)
+        exp_logits = _ops.exp(logits - max_logits)
+        probs = exp_logits / _ops.maximum(_ops.sum(exp_logits, axis=-1, keepdims=True), 1e-12)
 
-        drop_layer = instantiate_layer(self.dropout_tpl, Identity())
+        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, Identity())
         probs = drop_layer(probs)
 
-        encoded = np.einsum("bnts,bsnh->btnh", probs, v)
-        out = np.einsum("btnh,nhd->btd", encoded, wo_t)
-        if self.use_bias and b_o is not None:
-            out = out + np.asarray(b_o)
+        encoded = _ops.einsum("bnts,bsnh->btnh", probs, v)
+        out = _ops.einsum("btnh,nhd->btd", encoded, wo_t)
+        if self.use_bias:
+            bo_t = self.get_variable("b_o", (d_dim,), explicit=b_o)
+            out = out + bo_t
         return out
 
 
@@ -867,7 +962,7 @@ class SelfAttentionWithNormAndResidual(BasePraxisLayer):
         Returns:
             Output `Tensor` of shape `[B, T, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_dim = x.shape[-1]
         n_heads = max(1, self.num_heads)
         h_dim = (
@@ -876,14 +971,15 @@ class SelfAttentionWithNormAndResidual(BasePraxisLayer):
             else max(1, d_dim // n_heads)
         )
 
-        ln = instantiate_layer(self.norm_tpl, LayerNorm(dim=d_dim))
+        ln = self.get_sublayer("norm", self.norm_tpl, LayerNorm(dim=d_dim))
         default_attn = DotProductAttention(
             input_dim=d_dim,
             num_heads=n_heads,
             dim_per_head=h_dim,
+            atten_dropout_prob=self.atten_dropout_prob,
             params_init=self.params_init,
         )
-        attn = instantiate_layer(self.self_atten_tpl, default_attn)
+        attn = self.get_sublayer("self_atten", self.self_atten_tpl, default_attn)
 
         use_pre = self.pre_layer_norm and self.norm_policy != "post"
         normed = ln(x) if use_pre else x
@@ -892,7 +988,7 @@ class SelfAttentionWithNormAndResidual(BasePraxisLayer):
             if isinstance(attn, DotProductAttention)
             else attn(normed)
         )
-        drop_layer = instantiate_layer(self.residual_dropout_tpl, Identity())
+        drop_layer = self.get_sublayer("residual_dropout", self.residual_dropout_tpl, Identity())
         atten_out = drop_layer(atten_out)
 
         if self.force_no_residual:

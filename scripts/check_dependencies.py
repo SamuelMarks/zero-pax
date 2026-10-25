@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Script to verify that no disallowed third-party dependencies are used in non-test code."""
+"""Script to verify that no disallowed third-party dependencies are used in non-test code or requirements."""
 
 from __future__ import annotations
 
 import argparse
 import ast
+import re
 import sys
+import sysconfig
 from collections.abc import Sequence
 from pathlib import Path
-
-from stdlib_list import stdlib_list
 
 ALLOWED_THIRD_PARTY: frozenset[str] = frozenset(
     {
@@ -17,15 +17,50 @@ ALLOWED_THIRD_PARTY: frozenset[str] = frozenset(
         "cdd_python",
         "cdd",
         "ml_switcheroo_ir",
-        "ml_switcheroo_compiler",
-        "ml_switcheroo",
         "ml_ecosystem_snapshots",
-        "zero_jax",
         "zero_pax",
+        "zero_jax",
+        "zero_flax",
+        "zero_optax",
+        "zero_chex",
+        "zero_orbax",
+        "zero_grain",
+        "zero_keras",
+        "zero_mlx",
+        "zero_pytorch",
+        "zero_tensorflow",
+        "zero_zoo",
     }
 )
 
-STDLIB: frozenset[str] = frozenset(stdlib_list("3.9"))
+
+def _discover_stdlib_modules() -> frozenset[str]:
+    """Build the set of Python standard library top-level module names.
+
+    Returns:
+        Frozenset of standard library module names.
+    """
+    modules: set[str] = set(sys.builtin_module_names)
+    if sys.version_info >= (3, 10):
+        modules.update(sys.stdlib_module_names)
+    stdlib_dir = sysconfig.get_path("stdlib")
+    if stdlib_dir:
+        stdlib_path = Path(stdlib_dir)
+        if stdlib_path.is_dir():
+            for entry in stdlib_path.iterdir():
+                if entry.suffix == ".py":
+                    modules.add(entry.stem)
+                elif entry.is_dir() and entry.name not in ("site-packages", "__pycache__"):
+                    modules.add(entry.name)
+            lib_dynload = stdlib_path / "lib-dynload"
+            if lib_dynload.is_dir():
+                for entry in lib_dynload.iterdir():
+                    modules.add(entry.name.split(".")[0])
+    modules.add("__future__")
+    return frozenset(modules)
+
+
+STDLIB: frozenset[str] = _discover_stdlib_modules()
 
 
 def is_allowed_module(module_name: str) -> bool:
@@ -37,12 +72,12 @@ def is_allowed_module(module_name: str) -> bool:
     Returns:
         True if the top-level module is part of the Python standard library or allowlist.
     """
-    top_level = module_name.split(".")[0]
+    top_level = module_name.split(".")[0].replace("-", "_")
     return top_level in STDLIB or top_level in ALLOWED_THIRD_PARTY
 
 
 def check_file(file_path: Path) -> list[str]:
-    """Check a single Python file for disallowed third-party imports.
+    """Check a single Python file for disallowed third-party imports (including dynamic imports).
 
     Args:
         file_path: Path to the Python source file to inspect.
@@ -66,11 +101,47 @@ def check_file(file_path: Path) -> list[str]:
             isinstance(node, ast.ImportFrom) and node.module and not is_allowed_module(node.module)
         ):
             errors.append(f"{file_path}:{node.lineno}: Disallowed import: {node.module}")
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and not is_allowed_module(node.args[0].value)
+        ):
+            errors.append(
+                f"{file_path}:{node.lineno}: Disallowed dynamic import: {node.args[0].value}"
+            )
+    return errors
+
+
+def check_requirements_file(req_path: Path) -> list[str]:
+    """Validate that all runtime dependencies in `req_path` belong to `ALLOWED_THIRD_PARTY`.
+
+    Args:
+        req_path: Path to `requirements.txt`.
+
+    Returns:
+        List of violation messages for any disallowed dependency specifications.
+    """
+    if not req_path.is_file():
+        return []
+    errors: list[str] = []
+    for idx, raw_line in enumerate(req_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.match(r"^([a-zA-Z0-9_\-]+)", line)
+        if match:
+            pkg_name = match.group(1).replace("-", "_")
+            if not is_allowed_module(pkg_name):
+                errors.append(f"{req_path}:{idx}: Disallowed runtime dependency: {match.group(1)}")
     return errors
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the disallowed dependency check across source files.
+    """Run the disallowed dependency check across `src/`, `scripts/`, and `requirements.txt`.
 
     Args:
         argv: Optional command-line arguments.
@@ -83,20 +154,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         "filenames",
         nargs="*",
         type=Path,
-        help="Files to check (defaults to all Python files under src/).",
+        help="Files or directories to check (defaults to src/ and scripts/).",
     )
     args = parser.parse_args(argv)
 
     raw_filenames: list[Path] = list(args.filenames)
-    files_to_check: list[Path] = (
-        raw_filenames if raw_filenames else sorted(Path("src").rglob("*.py"))
-    )
+    target_paths: list[Path] = raw_filenames if raw_filenames else [Path("src"), Path("scripts")]
+
+    files_to_check: list[Path] = []
+    for p in target_paths:
+        if p.is_file() and p.suffix == ".py":
+            files_to_check.append(p)
+        elif p.is_dir():
+            files_to_check.extend(sorted(p.rglob("*.py")))
 
     all_errors: list[str] = []
     for file_path in files_to_check:
-        if "test" in file_path.parts:
+        if "test" in file_path.parts or "tests" in file_path.parts:
             continue
         all_errors.extend(check_file(file_path))
+
+    if not raw_filenames:
+        all_errors.extend(check_requirements_file(Path("requirements.txt")))
 
     if all_errors:
         print("Disallowed dependencies found in non-test code:")

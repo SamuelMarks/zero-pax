@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
 from zero_pax.praxis.layers.activations import Identity, ReLU
 from zero_pax.types import (
@@ -13,6 +13,22 @@ from zero_pax.types import (
     TensorOrScalar,
     WeightInit,
 )
+
+
+def _infer_einsum_weight_shape(equation: str, input_shape: tuple[int, ...]) -> tuple[int, ...]:
+    """Infer the weight tensor shape from an `equation` and `input_shape` when `w_shape` is unset.
+
+    Args:
+        equation: Einstein summation equation string (e.g., `'...d,df->...f'`).
+        input_shape: Shape tuple of the first input operand.
+
+    Returns:
+        Inferred weight shape tuple.
+    """
+    in_dim = input_shape[-1] if input_shape else 1
+    lhs, _ = equation.split("->", 1)
+    w_spec = lhs.split(",", 1)[1].strip().replace("...", "")
+    return (in_dim,) if len(w_spec) == 1 else (in_dim, in_dim)
 
 
 class EinsumOp(BasePraxisLayer):
@@ -48,10 +64,10 @@ class EinsumOp(BasePraxisLayer):
             operands = args
 
         if not operands:
-            return np.zeros((1,))
+            return _ops.zeros((1,))
         if not eq:
-            return np.asarray(operands[0])
-        return np.einsum(eq, *operands)
+            return self._to_tensor(operands[0])
+        return _ops.einsum(eq, *operands)
 
 
 class Einsum(BasePraxisLayer):
@@ -63,6 +79,8 @@ class Einsum(BasePraxisLayer):
         w_shape: Shape tuple of the learned weight tensor.
         use_bias: Whether to add a learned bias tensor.
         bias_shape: Optional explicit shape for the bias tensor.
+        weight_init: Optional weight initialization strategy for `w`.
+        bias_init: Optional weight initialization strategy for `b`.
         einsum_op_tpl: Optional template for the underlying `EinsumOp`.
     """
 
@@ -71,6 +89,8 @@ class Einsum(BasePraxisLayer):
     w_shape: tuple[int, ...] = ()
     use_bias: bool = False
     bias_shape: tuple[int, ...] = ()
+    weight_init: WeightInit | None = None
+    bias_init: WeightInit | None = None
     einsum_op_tpl: LayerTpl = None
 
     def __call__(
@@ -95,26 +115,28 @@ class Einsum(BasePraxisLayer):
         Returns:
             Projected `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         eq = self.eqn if self.eqn else self.equation
         if not eq:
             return x
-        op_layer = instantiate_layer(self.einsum_op_tpl, EinsumOp(equation=eq))
+        op_layer = self.get_sublayer("einsum_op", self.einsum_op_tpl, EinsumOp(equation=eq))
         if t2 is not None:
-            return op_layer(eq, x, np.asarray(t2))
+            return (
+                op_layer(eq, x, _ops.asarray(t2))
+                if isinstance(op_layer, EinsumOp)
+                else op_layer(x, _ops.asarray(t2))
+            )
 
-        w_t: Tensor
-        if w is not None:
-            w_t = np.asarray(w)
-        elif self.w_shape:
-            w_t = self.get_variable("w", self.w_shape)
-        else:
-            w_t = np.ones((x.shape[-1], x.shape[-1]))
+        target_w_shape = self.w_shape if self.w_shape else _infer_einsum_weight_shape(eq, x.shape)
+        default_w_init = self.weight_init or (
+            self.params_init if self.w_shape else WeightInit(method="ones", scale=1.0)
+        )
+        w_t = self.get_variable("w", target_w_shape, explicit=w, init=default_w_init)
 
-        out = op_layer(eq, x, w_t)
+        out = op_layer(eq, x, w_t) if isinstance(op_layer, EinsumOp) else op_layer(x, w_t)
         if self.use_bias:
             b_shape = self.bias_shape if self.bias_shape else (out.shape[-1],)
-            b_t = self.get_variable("b", b_shape, explicit=b)
+            b_t = self.get_variable("b", b_shape, explicit=b, init=self.bias_init)
             out = out + b_t
         return out
 
@@ -152,12 +174,16 @@ class Linear(BasePraxisLayer):
         Returns:
             Projected `Tensor` of shape `[..., output_dims]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         in_d = self.input_dims if self.input_dims > 0 else x.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
         w_t = self.get_variable("w", (in_d, out_d), explicit=w, init=self.weight_init)
-        op_layer = instantiate_layer(self.einsum_tpl, EinsumOp(equation="...d,df->...f"))
-        return op_layer("...d,df->...f", x, w_t)
+        op_layer = self.get_sublayer("einsum", self.einsum_tpl, EinsumOp(equation="...d,df->...f"))
+        return (
+            op_layer("...d,df->...f", x, w_t)
+            if isinstance(op_layer, EinsumOp)
+            else op_layer(x, w_t)
+        )
 
 
 class Bias(BasePraxisLayer):
@@ -189,7 +215,7 @@ class Bias(BasePraxisLayer):
         Returns:
             Biased `Tensor` of the same shape as `inputs`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         feat_dim = self.dims if self.dims > 0 else x.shape[-1]
         b_t = self.get_variable("b", (feat_dim,), explicit=b, init=self.bias_init)
         return x + b_t
@@ -242,7 +268,7 @@ class FeedForward(BasePraxisLayer):
         Returns:
             Output `Tensor` of shape `[..., output_dims]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         in_d = self.input_dims if self.input_dims > 0 else x.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
         default_lin = Linear(
@@ -251,7 +277,7 @@ class FeedForward(BasePraxisLayer):
             weight_init=self.weight_init,
             params_init=self.params_init,
         )
-        linear = instantiate_layer(self.linear_tpl, default_lin)
+        linear = self.get_sublayer("linear", self.linear_tpl, default_lin)
         out = linear(x, w=w) if isinstance(linear, Linear) else linear(x)
 
         if self.has_bias:
@@ -260,13 +286,13 @@ class FeedForward(BasePraxisLayer):
                 bias_init=self.bias_init,
                 params_init=self.params_init,
             )
-            bias_layer = instantiate_layer(self.bias_tpl, default_bias)
+            bias_layer = self.get_sublayer("bias", self.bias_tpl, default_bias)
             out = bias_layer(out, b=b) if isinstance(bias_layer, Bias) else bias_layer(out)
 
-        act_layer = instantiate_layer(self.activation_tpl, ReLU())
+        act_layer = self.get_sublayer("activation", self.activation_tpl, ReLU())
         out = act_layer(out)
 
-        drop_layer = instantiate_layer(self.dropout_tpl, Identity())
+        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, Identity())
         out = drop_layer(out)
 
         return out
@@ -278,14 +304,22 @@ class MLPBlock(BasePraxisLayer):
     Attributes:
         num_layers: Number of `FeedForward` layers in the stack.
         hidden_dims: Hidden feature dimension size.
+        has_bias: Whether each `FeedForward` layer includes an additive bias.
         activate_final: Whether to apply the activation function on the final layer.
         ff_tpl: Optional template for each `FeedForward` layer.
+        fflayer_tpl: Optional alias template for each `FeedForward` layer.
+        activation_tpl: Optional activation layer template applied to intermediate layers.
+        dropout_tpl: Optional dropout layer template applied after each layer.
     """
 
     num_layers: int = 2
     hidden_dims: int = 0
+    has_bias: bool = True
     activate_final: bool = False
     ff_tpl: LayerTpl = None
+    fflayer_tpl: LayerTpl = None
+    activation_tpl: LayerTpl = None
+    dropout_tpl: LayerTpl = None
 
     def __call__(
         self,
@@ -307,24 +341,24 @@ class MLPBlock(BasePraxisLayer):
         Returns:
             Output `Tensor` after `num_layers` feedforward projections.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         feat_dim = self.hidden_dims if self.hidden_dims > 0 else out.shape[-1]
-        for idx in range(max(1, self.num_layers)):
-            is_last = idx == self.num_layers - 1
-            if is_last and not self.activate_final:
-                default_ff = FeedForward(
-                    input_dims=out.shape[-1],
-                    output_dims=feat_dim,
-                    activation_tpl=Identity(),
-                    params_init=self.params_init,
-                )
-            else:
-                default_ff = FeedForward(
-                    input_dims=out.shape[-1],
-                    output_dims=feat_dim,
-                    params_init=self.params_init,
-                )
-            ff = instantiate_layer(self.ff_tpl, default_ff)
+        tpl_to_use = self.ff_tpl if self.ff_tpl is not None else self.fflayer_tpl
+        n_layers = max(1, self.num_layers)
+        for idx in range(n_layers):
+            is_last = idx == n_layers - 1
+            act_for_layer: LayerTpl = (
+                Identity() if (is_last and not self.activate_final) else self.activation_tpl
+            )
+            default_ff = FeedForward(
+                input_dims=out.shape[-1],
+                output_dims=feat_dim,
+                has_bias=self.has_bias,
+                activation_tpl=act_for_layer,
+                dropout_tpl=self.dropout_tpl,
+                params_init=self.params_init,
+            )
+            ff = instantiate_layer(tpl_to_use, default_ff, parent=self, name=f"ff_{idx}")
             out = ff(out, w=w, b=b) if isinstance(ff, FeedForward) else ff(out)
         return out
 
@@ -358,7 +392,7 @@ class PerDimScale(BasePraxisLayer):
         Returns:
             Scaled `Tensor` of the same shape as `inputs`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d = self.dim if self.dim > 0 else (self.dims if self.dims > 0 else x.shape[-1])
         s = self.get_variable(
             "scale", (d,), explicit=scale, init=WeightInit(method="ones", scale=1.0)
@@ -388,7 +422,7 @@ class Pooling(BasePraxisLayer):
         *args: TensorOrScalar,
         **kwargs: TensorOrScalar,
     ) -> Tensor | PoolingOutput:
-        """Apply 2D spatial pooling to `inputs`.
+        """Apply vectorized 2D spatial pooling to `inputs`.
 
         Args:
             inputs: 4D input tensor of shape `[B, H, W, C]`.
@@ -412,13 +446,13 @@ class Pooling(BasePraxisLayer):
         if pool_mode not in ("MAX", "AVG"):
             raise ValueError(f"pooling_type must be MAX or AVG, got {self.pooling_type}")
 
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if self.window_shape == (1, 1) and self.window_stride == (1, 1):
             if paddings is not None:
-                return x, np.asarray(paddings)
+                return x, _ops.asarray(paddings)
             return x
 
-        b_sz, h_in, w_in, c_in = x.shape
+        b_sz, h_in, w_in, _ = x.shape
         wh, ww = self.window_shape
         sh, sw = self.window_stride
 
@@ -436,16 +470,16 @@ class Pooling(BasePraxisLayer):
             out_w = (w_in - ww) // sw + 1
             pad_top = pad_bottom = pad_left = pad_right = 0
 
-        fill_val = -np.inf if pool_mode == "MAX" else 0.0
+        fill_val = -_ops.inf if pool_mode == "MAX" else 0.0
         if pad_top > 0 or pad_bottom > 0 or pad_left > 0 or pad_right > 0:
-            x_pad = np.pad(
+            x_pad = _ops.pad(
                 x,
                 ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
                 mode="constant",
                 constant_values=fill_val,
             )
-            mask = np.ones((b_sz, h_in, w_in, 1))
-            mask_pad = np.pad(
+            mask = _ops.ones((b_sz, h_in, w_in, 1))
+            mask_pad = _ops.pad(
                 mask,
                 ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
                 mode="constant",
@@ -453,13 +487,13 @@ class Pooling(BasePraxisLayer):
             )
         else:
             x_pad = x
-            mask_pad = np.ones((b_sz, h_in, w_in, 1))
+            mask_pad = _ops.ones((b_sz, h_in, w_in, 1))
 
         if paddings is not None:
-            pad_t = np.asarray(paddings)
-            valid_mask = 1.0 - np.reshape(pad_t, (b_sz, h_in, 1, 1))
+            pad_t = _ops.asarray(paddings)
+            valid_mask = 1.0 - _ops.reshape(pad_t, (b_sz, h_in, 1, 1))
             if pad_top > 0 or pad_bottom > 0:
-                valid_mask = np.pad(
+                valid_mask = _ops.pad(
                     valid_mask,
                     ((0, 0), (pad_top, pad_bottom), (0, 0), (0, 0)),
                     mode="constant",
@@ -467,42 +501,37 @@ class Pooling(BasePraxisLayer):
                 )
             mask_pad = mask_pad * valid_mask
             if pool_mode == "MAX":
-                x_pad = np.where(mask_pad > 0.0, x_pad, -np.inf)
+                x_pad = _ops.where(mask_pad > 0.0, x_pad, -_ops.inf)
             else:
                 x_pad = x_pad * mask_pad
 
-        out = np.zeros((b_sz, out_h, out_w, c_in))
-        for i in range(out_h):
-            for j in range(out_w):
-                hs, ws = i * sh, j * sw
-                window = x_pad[:, hs : hs + wh, ws : ws + ww, :]
-                if pool_mode == "MAX":
-                    out[:, i, j, :] = np.max(window, axis=(1, 2))
-                else:
-                    m_win = mask_pad[:, hs : hs + wh, ws : ws + ww, :]
-                    denom = np.maximum(np.sum(m_win, axis=(1, 2)), 1.0)
-                    out[:, i, j, :] = np.sum(window, axis=(1, 2)) / denom
+        patches = _ops.extract_patches_2d(x_pad, out_h, out_w, wh, ww, sh, sw)
+        if pool_mode == "MAX":
+            out = _ops.max(patches, axis=(3, 4))
+        else:
+            mask_patches = _ops.extract_patches_2d(mask_pad, out_h, out_w, wh, ww, sh, sw)
+            denom = _ops.maximum(_ops.sum(mask_patches, axis=(3, 4)), 1.0)
+            out = _ops.sum(patches, axis=(3, 4)) / denom
 
         if paddings is not None:
-            pad_t = np.asarray(paddings)
+            pad_t = _ops.asarray(paddings)
             if sh > 1 or self.padding == "VALID":
-                if pad_top > 0 or pad_bottom > 0:
-                    p_pad = np.pad(
+                p_pad = (
+                    _ops.pad(
                         pad_t,
                         ((0, 0), (pad_top, pad_bottom)),
                         mode="constant",
                         constant_values=1.0,
                     )
-                else:
-                    p_pad = pad_t
-                out_paddings = np.zeros((b_sz, out_h))
-                for i in range(out_h):
-                    hs = i * sh
-                    out_paddings[:, i] = np.min(p_pad[:, hs : hs + wh], axis=1)
+                    if (pad_top > 0 or pad_bottom > 0)
+                    else pad_t
+                )
+                p_patches = _ops.extract_patches_1d(_ops.expand_dims(p_pad, axis=-1), out_h, wh, sh)
+                out_paddings = _ops.min(p_patches[:, :, :, 0], axis=2)
             else:
                 out_paddings = pad_t
             if pool_mode == "AVG":
-                out = out * (1.0 - np.reshape(out_paddings, (b_sz, out_h, 1, 1)))
+                out = out * (1.0 - _ops.reshape(out_paddings, (b_sz, out_h, 1, 1)))
             return out, out_paddings
 
         return out
@@ -541,14 +570,14 @@ class Pooling1D(BasePraxisLayer):
         Returns:
             Pooled 3D `Tensor`, or `(pooled_tensor, out_paddings)` if `paddings` is provided.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         win = self.window if self.window > 0 else 1
         if win == 1 and self.stride == 1:
             if paddings is not None:
-                return x, np.asarray(paddings)
+                return x, _ops.asarray(paddings)
             return x
 
-        expanded = np.expand_dims(x, axis=2)
+        expanded = _ops.expand_dims(x, axis=2)
         pool_2d = Pooling(
             window_shape=(win, 1),
             window_stride=(self.stride, 1),
@@ -601,7 +630,7 @@ class GlobalPooling(BasePraxisLayer):
         if not all(d >= 0 for d in self.pooling_dims):
             raise ValueError("pooling_dims must be non-negative integers")
 
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if not all(d < x.ndim for d in self.pooling_dims):
             raise ValueError("pooling_dims must be smaller than input rank.")
 
@@ -611,22 +640,22 @@ class GlobalPooling(BasePraxisLayer):
 
         axes = tuple(self.pooling_dims)
         if compatible_paddings is not None:
-            pad_t = np.asarray(compatible_paddings)
+            pad_t = _ops.asarray(compatible_paddings)
             weights = 1.0 - pad_t
             if pool_mode == "AVG":
-                num = np.sum(x * weights, axis=axes, keepdims=self.keepdims)
-                den = np.maximum(np.sum(weights, axis=axes, keepdims=self.keepdims), 1.0)
+                num = _ops.sum(x * weights, axis=axes, keepdims=self.keepdims)
+                den = _ops.maximum(_ops.sum(weights, axis=axes, keepdims=self.keepdims), 1.0)
                 out = num / den
-                all_padded = np.sum(weights, axis=axes, keepdims=self.keepdims) == 0.0
-                out = np.where(all_padded, 0.0, out)
+                all_padded = _ops.sum(weights, axis=axes, keepdims=self.keepdims) == 0.0
+                out = _ops.where(all_padded, 0.0, out)
             else:
-                masked_x = np.where(pad_t > 0.0, -np.inf, x)
-                out = np.max(masked_x, axis=axes, keepdims=self.keepdims)
+                masked_x = _ops.where(pad_t > 0.0, -_ops.inf, x)
+                out = _ops.max(masked_x, axis=axes, keepdims=self.keepdims)
         else:
             if pool_mode == "AVG":
-                out = np.mean(x, axis=axes, keepdims=self.keepdims)
+                out = _ops.mean(x, axis=axes, keepdims=self.keepdims)
             else:
-                out = np.max(x, axis=axes, keepdims=self.keepdims)
+                out = _ops.max(x, axis=axes, keepdims=self.keepdims)
 
         return out
 

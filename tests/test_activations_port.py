@@ -23,10 +23,13 @@ from zero_pax.praxis.layers import (
 
 
 def test_base_and_identity_activation() -> None:
-    """Verify `BaseActivation` and `Identity` return inputs unchanged."""
+    """Verify `BaseActivation` and `Identity` return inputs unchanged across 2D and 3D tensors."""
     inputs = np.array([[-1.0, 0.0, 2.0]], dtype=np.float32)
     np.testing.assert_allclose(BaseActivation()(inputs), inputs, atol=1e-5)
     np.testing.assert_allclose(Identity()(inputs), inputs, atol=1e-5)
+    grid_3d = np.arange(-12, 12, dtype=np.float32).reshape((2, 3, 4))
+    np.testing.assert_allclose(ReLU()(grid_3d), np.maximum(0.0, grid_3d), atol=1e-5)
+    np.testing.assert_allclose(Sigmoid()(np.zeros((2, 2), dtype=np.float32)), np.full((2, 2), 0.5))
 
 
 def test_relu() -> None:

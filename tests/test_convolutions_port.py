@@ -149,4 +149,5 @@ def test_depthwise_and_light_conv1d() -> None:
     )
     out_lc = lconv_causal(x_seq, w_start=w_start, w_conv=w, w_end=w_end)
     assert out_lc.shape == (1, 6, 4)
+    np.testing.assert_allclose(np.mean(out_lc, axis=1), np.zeros((1, 4)), atol=0.5)
     assert np.any(np.asarray(out_lc) != 0.0)

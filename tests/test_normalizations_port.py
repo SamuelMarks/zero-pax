@@ -77,11 +77,14 @@ def test_batch_norm() -> None:
     inputs = np.arange(1, 17, dtype=np.float32).reshape((2, 4, 2))
     paddings = np.array([[0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
 
-    bn = BatchNorm(dim=2, epsilon=1e-3)
+    bn = BatchNorm(dim=2, decay=0.5, epsilon=1e-3)
     out_train = bn(inputs)
     mean_ref = jnp.mean(inputs, axis=(0, 1), keepdims=True)
     var_ref = jnp.var(inputs, axis=(0, 1), keepdims=True)
     np.testing.assert_allclose(out_train, (inputs - mean_ref) / jnp.sqrt(var_ref + 1e-3), atol=1e-5)
+    np.testing.assert_allclose(
+        bn.params["moving_mean"](), 0.5 * np.mean(inputs, axis=(0, 1)), atol=1e-5
+    )
 
     out_pad = bn(inputs, paddings=paddings)
     assert np.all(np.asarray(out_pad[0, 2:]) == 0.0)

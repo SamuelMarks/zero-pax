@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
-from zero_pax.praxis.layers.activations import Identity, ReLU, Swish
+from zero_pax.praxis.layers.activations import Identity, LeakyReLU, ReLU, Swish, Tanh
 from zero_pax.praxis.layers.attentions import DotProductAttention
 from zero_pax.praxis.layers.convolutions import Conv2D, ConvBNAct, LightConv1D
 from zero_pax.praxis.layers.embeddings import FullSoftmax, PositionalEmbedding2D
@@ -19,7 +19,7 @@ from zero_pax.praxis.layers.linear_pooling import (
 )
 from zero_pax.praxis.layers.normalizations import BatchNorm, LayerNorm
 from zero_pax.praxis.layers.transformers import StackedTransformer, TransformerFeedForward
-from zero_pax.types import Tensor, TensorOrScalar
+from zero_pax.types import Tensor, TensorOrScalar, WeightInit
 
 
 class VanillaBlock(BasePraxisLayer):
@@ -61,23 +61,46 @@ class VanillaBlock(BasePraxisLayer):
         Returns:
             4D output tensor of shape `[B, H_out, W_out, C_out]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
+        if self.body is not None:
+            out = x
+            for idx, sub_tpl in enumerate(self.body):
+                sub = instantiate_layer(sub_tpl, Identity(), parent=self, name=f"body_{idx}")
+                out = sub(out)
+            return out
+
         c_in = self.input_dim if self.input_dim > 0 else x.shape[-1]
         c_out = self.output_dim if self.output_dim > 0 else c_in
         k = max(1, self.kernel_size)
         s = max(1, self.stride)
 
-        conv1 = ConvBNAct(
-            filter_shape=(k, k, c_in, c_out),
-            filter_stride=(s, s),
-            activation_tpl=self.activation_tpl,
-            params_init=self.params_init,
+        eff_act: LayerTpl = (
+            self.activation_tpl
+            if self.activation_tpl is not None
+            else (
+                LeakyReLU(negative_slope=self.negative_slope) if self.negative_slope > 0 else ReLU()
+            )
         )
-        conv2 = ConvBNAct(
-            filter_shape=(1, 1, c_out, c_out),
-            filter_stride=(1, 1),
-            activation_tpl=Identity(),
-            params_init=self.params_init,
+
+        conv1 = self.get_sublayer(
+            "conv1",
+            self.conv_params,
+            ConvBNAct(
+                filter_shape=(k, k, c_in, c_out),
+                filter_stride=(s, s),
+                activation_tpl=eff_act,
+                params_init=self.params_init,
+            ),
+        )
+        conv2 = self.get_sublayer(
+            "conv2",
+            self.conv_params,
+            ConvBNAct(
+                filter_shape=(1, 1, c_out, c_out),
+                filter_stride=(1, 1),
+                activation_tpl=Identity(),
+                params_init=self.params_init,
+            ),
         )
         return conv2(conv1(x))
 
@@ -127,41 +150,36 @@ class VanillaNet(BasePraxisLayer):
         Returns:
             4D feature map `Tensor`.
         """
-        x = np.asarray(inputs)
-        if (
-            tuple(self.strides) == (1, 2, 2, 2)
-            and tuple(self.channels) == (64, 128, 256, 512)
-            and tuple(self.blocks) == (2, 2, 2, 2)
-            and self.entryflow_conv_params is None
-            and self.block_params is None
-            and self.output_spatial_pooling_params is None
-        ):
-            c_dim = x.shape[-1]
-            blk = VanillaBlock(
-                input_dim=c_dim, output_dim=c_dim, stride=1, params_init=self.params_init
-            )
-            return blk(x)
-
-        out = x
+        out = self._to_tensor(inputs)
         if self.entryflow_conv_params is not None:
-            stem = instantiate_layer(self.entryflow_conv_params, Identity())
+            stem = self.get_sublayer("entryflow_conv", self.entryflow_conv_params, Identity())
             out = stem(out)
 
-        for stride, ch, n_blk, k_sz in zip(self.strides, self.channels, self.blocks, self.kernels):
+        for s_idx, (stride, ch, n_blk, k_sz) in enumerate(
+            zip(self.strides, self.channels, self.blocks, self.kernels)
+        ):
             for b_idx in range(max(1, n_blk)):
                 blk_stride = stride if b_idx == 0 else 1
                 default_blk = VanillaBlock(
                     input_dim=out.shape[-1],
                     output_dim=ch,
+                    conv_params=self.conv_params,
                     kernel_size=k_sz,
                     stride=blk_stride,
+                    negative_slope=self.negative_slope,
                     params_init=self.params_init,
                 )
-                stage_blk = instantiate_layer(self.block_params, default_blk)
+                stage_blk = instantiate_layer(
+                    self.block_params,
+                    default_blk,
+                    parent=self,
+                    name=f"stage_{s_idx}_block_{b_idx}",
+                )
                 out = stage_blk(out)
 
         if self.output_spatial_pooling_params is not None:
-            pool = instantiate_layer(
+            pool = self.get_sublayer(
+                "output_spatial_pooling",
                 self.output_spatial_pooling_params,
                 GlobalPooling(pooling_dims=(1, 2)),
             )
@@ -216,41 +234,68 @@ class ResNetBlock(BasePraxisLayer):
         Returns:
             4D output `Tensor` of shape `[B, H_out, W_out, 4 * C_out]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
+        if self.body is not None:
+            out = x
+            for idx, sub_tpl in enumerate(self.body):
+                sub = instantiate_layer(sub_tpl, Identity(), parent=self, name=f"body_{idx}")
+                out = sub(out)
+            return out
+
         c_in = self.input_dim if self.input_dim > 0 else x.shape[-1]
         c_mid = self.output_dim if self.output_dim > 0 else max(1, c_in // 4)
         c_out = 4 * c_mid if self.output_dim > 0 else c_in
         k = max(1, self.kernel_size)
         s = max(1, self.stride)
 
-        act = instantiate_layer(self.activation_tpl, ReLU())
+        act = self.get_sublayer("act", self.activation_tpl, ReLU())
 
-        conv1 = Conv2D(
-            filter_shape=(1, 1, c_in, c_mid),
-            filter_stride=(1, 1),
-            params_init=self.params_init,
+        conv1 = self.get_sublayer(
+            "conv1",
+            self.conv_params,
+            Conv2D(
+                filter_shape=(1, 1, c_in, c_mid),
+                filter_stride=(1, 1),
+                params_init=self.params_init,
+            ),
         )
-        bn1 = instantiate_layer(self.norm_tpl, BatchNorm(dim=c_mid))
+        bn1 = self.get_sublayer("bn1", self.norm_tpl, BatchNorm(dim=c_mid))
         h = act(bn1(conv1(x)))
 
-        conv2 = Conv2D(
-            filter_shape=(k, k, c_mid, c_mid),
-            filter_stride=(s, s),
-            params_init=self.params_init,
+        conv2 = self.get_sublayer(
+            "conv2",
+            self.conv_params,
+            Conv2D(
+                filter_shape=(k, k, c_mid, c_mid),
+                filter_stride=(s, s),
+                params_init=self.params_init,
+            ),
         )
-        bn2 = instantiate_layer(self.norm_tpl, BatchNorm(dim=c_mid))
+        bn2 = self.get_sublayer("bn2", self.norm_tpl, BatchNorm(dim=c_mid))
         h = act(bn2(conv2(h)))
 
-        conv3 = Conv2D(
-            filter_shape=(1, 1, c_mid, c_out),
-            filter_stride=(1, 1),
-            params_init=self.params_init,
+        conv3 = self.get_sublayer(
+            "conv3",
+            self.conv_params,
+            Conv2D(
+                filter_shape=(1, 1, c_mid, c_out),
+                filter_stride=(1, 1),
+                params_init=self.params_init,
+            ),
         )
-        bn3 = instantiate_layer(self.norm_tpl, BatchNorm(dim=c_out))
+        bn3_gamma_init = (
+            WeightInit(method="constant", scale=-1.0) if self.zero_init_residual else None
+        )
+        bn3 = self.get_sublayer(
+            "bn3",
+            self.norm_tpl,
+            BatchNorm(dim=c_out, gamma_init=bn3_gamma_init),
+        )
         h = bn3(conv3(h))
 
         if c_in != c_out or s != 1:
-            proj = instantiate_layer(
+            proj = self.get_sublayer(
+                "shortcut",
                 self.shortcut,
                 Conv2D(
                     filter_shape=(1, 1, c_in, c_out),
@@ -258,12 +303,12 @@ class ResNetBlock(BasePraxisLayer):
                     params_init=self.params_init,
                 ),
             )
-            bn_sc = instantiate_layer(self.norm_tpl, BatchNorm(dim=c_out))
+            bn_sc = self.get_sublayer("bn_sc", self.norm_tpl, BatchNorm(dim=c_out))
             sc = bn_sc(proj(x))
         else:
             sc = x
 
-        post_act = instantiate_layer(self.post_activation, act)
+        post_act = self.get_sublayer("post_act", self.post_activation, act)
         return post_act(h + sc)
 
 
@@ -314,48 +359,39 @@ class ResNet(BasePraxisLayer):
         Returns:
             4D output feature map `Tensor`.
         """
-        x = np.asarray(inputs)
-        if (
-            tuple(self.strides) == (1, 2, 2, 2)
-            and tuple(self.channels) == (64, 128, 256, 512)
-            and tuple(self.blocks) == (3, 4, 6, 3)
-            and self.entryflow_conv_params is None
-            and self.block_params is None
-            and self.output_spatial_pooling_params is None
-        ):
-            c_dim = x.shape[-1]
-            blk = ResNetBlock(
-                input_dim=c_dim,
-                output_dim=max(1, c_dim // 4),
-                stride=1,
-                params_init=self.params_init,
-            )
-            return blk(x)
-
-        out = x
+        out = self._to_tensor(inputs)
         if self.entryflow_conv_params is not None:
-            stem = instantiate_layer(self.entryflow_conv_params, Identity())
+            stem = self.get_sublayer("entryflow_conv", self.entryflow_conv_params, Identity())
             out = stem(out)
         if self.entry_max_pool and out.shape[1] >= 3 and out.shape[2] >= 3:
             pool_stem = Pooling(window_shape=(3, 3), window_stride=(2, 2), pooling_type="MAX")
             res_pool = pool_stem(out)
             out = res_pool[0] if isinstance(res_pool, tuple) else res_pool
 
-        for stride, ch, n_blk, k_sz in zip(self.strides, self.channels, self.blocks, self.kernels):
+        for s_idx, (stride, ch, n_blk, k_sz) in enumerate(
+            zip(self.strides, self.channels, self.blocks, self.kernels)
+        ):
             for b_idx in range(max(1, n_blk)):
                 blk_stride = stride if b_idx == 0 else 1
                 default_blk = ResNetBlock(
                     input_dim=out.shape[-1],
                     output_dim=ch,
+                    conv_params=self.conv_params,
                     kernel_size=k_sz,
                     stride=blk_stride,
                     params_init=self.params_init,
                 )
-                stage_blk = instantiate_layer(self.block_params, default_blk)
+                stage_blk = instantiate_layer(
+                    self.block_params,
+                    default_blk,
+                    parent=self,
+                    name=f"stage_{s_idx}_block_{b_idx}",
+                )
                 out = stage_blk(out)
 
         if self.output_spatial_pooling_params is not None:
-            pool_exit = instantiate_layer(
+            pool_exit = self.get_sublayer(
+                "output_spatial_pooling",
                 self.output_spatial_pooling_params,
                 GlobalPooling(pooling_dims=(1, 2)),
             )
@@ -435,8 +471,14 @@ class Conformer(BasePraxisLayer):
 
         Returns:
             3D Conformer output `Tensor` of shape `[B, T, D]`.
+
+        Raises:
+            ValueError: If `self.layer_order` is not one of the supported order strings.
         """
-        x = np.asarray(inputs)
+        if self.layer_order not in ("mhsa_before_conv", "conv_before_mhsa", "mhsa", "conv"):
+            raise ValueError(f"Unsupported Conformer layer_order: {self.layer_order!r}")
+
+        x = self._to_tensor(inputs)
         d_model = (
             self.input_dims
             if self.input_dims > 0
@@ -455,25 +497,25 @@ class Conformer(BasePraxisLayer):
             residual_weight=self.ff_residual_weight,
             params_init=self.params_init,
         )
-        ff_start = instantiate_layer(self.fflayer_start_tpl, default_ff_start)
+        ff_start = self.get_sublayer("fflayer_start", self.fflayer_start_tpl, default_ff_start)
         x = (
             ff_start(x, paddings=paddings)
             if isinstance(ff_start, TransformerFeedForward)
             else ff_start(x)
         )
 
-        ln_attn = LayerNorm(dim=d_model)
+        ln_attn = self.get_sublayer("ln_attn", None, LayerNorm(dim=d_model))
         default_attn = DotProductAttention(
             input_dim=d_model,
             num_heads=n_heads,
             dim_per_head=max(1, d_model // n_heads),
             params_init=self.params_init,
         )
-        attn = instantiate_layer(self.trans_atten_tpl, default_attn)
+        attn = self.get_sublayer("trans_atten", self.trans_atten_tpl, default_attn)
         default_lconv = LightConv1D(
             input_dims=d_model, kernel_size=k_sz, params_init=self.params_init
         )
-        lconv = instantiate_layer(self.lconv_tpl, default_lconv)
+        lconv = self.get_sublayer("lconv", self.lconv_tpl, default_lconv)
 
         if self.layer_order == "mhsa_before_conv":
             norm_x = ln_attn(x)
@@ -503,7 +545,7 @@ class Conformer(BasePraxisLayer):
                 else attn(norm_x)
             )
             x = x + a_out
-        elif self.layer_order == "conv":
+        else:
             c_out = lconv(x, paddings=paddings) if isinstance(lconv, LightConv1D) else lconv(x)
             x = x + c_out
 
@@ -514,19 +556,23 @@ class Conformer(BasePraxisLayer):
             residual_weight=self.ff_residual_weight,
             params_init=self.params_init,
         )
-        ff_end = instantiate_layer(self.fflayer_end_tpl, default_ff_end)
+        ff_end = (
+            ff_start
+            if self.fflayer_weight_sharing
+            else self.get_sublayer("fflayer_end", self.fflayer_end_tpl, default_ff_end)
+        )
         x = (
             ff_end(x, paddings=paddings)
             if isinstance(ff_end, TransformerFeedForward)
             else ff_end(x)
         )
 
-        final_ln = instantiate_layer(self.final_ln_tpl, LayerNorm(dim=d_model))
+        final_ln = self.get_sublayer("final_ln", self.final_ln_tpl, LayerNorm(dim=d_model))
         out = final_ln(x)
 
         if paddings is not None:
-            pad_t = np.asarray(paddings)
-            out = out * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            out = out * (1.0 - _ops.expand_dims(pad_t, -1))
         return out
 
 
@@ -577,16 +623,16 @@ class VitEntryLayers(BasePraxisLayer):
         Returns:
             Patch token sequence `Tensor` of shape `[B, N + prepend + append, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if x.ndim == 4:
             b_sz, h_img, w_img, c_img = x.shape
             p_sz = self.patch_size if self.patch_size > 0 else max(1, min(h_img, w_img) // 2)
             gh = max(1, h_img // p_sz)
             gw = max(1, w_img // p_sz)
             cropped = x[:, : gh * p_sz, : gw * p_sz, :]
-            reshaped = np.reshape(cropped, (b_sz, gh, p_sz, gw, p_sz, c_img))
-            transposed = np.transpose(reshaped, (0, 1, 3, 2, 4, 5))
-            patches = np.reshape(transposed, (b_sz, gh * gw, p_sz * p_sz * c_img))
+            reshaped = _ops.reshape(cropped, (b_sz, gh, p_sz, gw, p_sz, c_img))
+            transposed = _ops.transpose(reshaped, (0, 1, 3, 2, 4, 5))
+            patches = _ops.reshape(transposed, (b_sz, gh * gw, p_sz * p_sz * c_img))
         else:
             patches = x
             b_sz, n_tok, _ = patches.shape
@@ -595,30 +641,37 @@ class VitEntryLayers(BasePraxisLayer):
 
         in_d = patches.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
-        lin = Linear(input_dims=in_d, output_dims=out_d, params_init=self.params_init)
+        lin = self.get_sublayer(
+            "patch_projection",
+            None,
+            Linear(
+                input_dims=in_d,
+                output_dims=out_d,
+                weight_init=WeightInit(method="ones", scale=1.0)
+                if (self.params_init is None or self.params_init.method == "zeros")
+                else self.params_init,
+                params_init=self.params_init,
+            ),
+        )
         tokens = (
             lin(patches, w=w_patch)
-            if w_patch is not None
-            else (patches if in_d == out_d else lin(patches, w=np.eye(in_d, out_d)))
+            if isinstance(lin, Linear) and w_patch is not None
+            else (patches if in_d == out_d and w_patch is None else lin(patches))
         )
 
         if self.prepend_cls_tokens > 0:
-            prep_t = (
-                np.asarray(cls_prepend)
-                if cls_prepend is not None
-                else np.zeros((1, self.prepend_cls_tokens, out_d))
+            prep_t = self.get_variable(
+                "cls_prepend", (1, self.prepend_cls_tokens, out_d), explicit=cls_prepend
             )
-            prep_batch = np.broadcast_to(prep_t, (b_sz, self.prepend_cls_tokens, out_d))
-            tokens = np.concatenate([prep_batch, tokens], axis=1)
+            prep_batch = _ops.broadcast_to(prep_t, (b_sz, self.prepend_cls_tokens, out_d))
+            tokens = _ops.concatenate([prep_batch, tokens], axis=1)
 
         if self.append_cls_tokens > 0:
-            app_t = (
-                np.asarray(cls_append)
-                if cls_append is not None
-                else np.zeros((1, self.append_cls_tokens, out_d))
+            app_t = self.get_variable(
+                "cls_append", (1, self.append_cls_tokens, out_d), explicit=cls_append
             )
-            app_batch = np.broadcast_to(app_t, (b_sz, self.append_cls_tokens, out_d))
-            tokens = np.concatenate([tokens, app_batch], axis=1)
+            app_batch = _ops.broadcast_to(app_t, (b_sz, self.append_cls_tokens, out_d))
+            tokens = _ops.concatenate([tokens, app_batch], axis=1)
 
         default_pe = PositionalEmbedding2D(
             h=gh,
@@ -627,7 +680,7 @@ class VitEntryLayers(BasePraxisLayer):
             num_prepend_cls_tokens=self.prepend_cls_tokens,
             num_append_cls_tokens=self.append_cls_tokens,
         )
-        pe_2d = instantiate_layer(self.pos_emb_tpl, default_pe)
+        pe_2d = self.get_sublayer("pos_emb", self.pos_emb_tpl, default_pe)
         pos = pe_2d(tokens)
         if pos.shape[1] == tokens.shape[1] and pos.shape[2] == tokens.shape[2]:
             tokens = tokens + pos
@@ -683,15 +736,16 @@ class VitExitLayers(BasePraxisLayer):
         Returns:
             Pooled 2D `Tensor` `[B, D_out]` if `pooled` is True, otherwise 3D `[B, N, D_out]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_in = self.hidden_dim if self.hidden_dim > 0 else x.shape[-1]
         d_out = self.output_dim if self.output_dim > 0 else d_in
 
-        ln = instantiate_layer(self.ln_tpl, LayerNorm(dim=d_in))
+        ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=d_in))
         normed = ln(x) if self.pre_ln else x
 
         if self.pooled and normed.ndim >= 3:
-            pool = instantiate_layer(
+            pool = self.get_sublayer(
+                "pooling",
                 self.pooling_tpl,
                 GlobalPooling(pooling_type="MAX", pooling_dims=[1]),
             )
@@ -699,13 +753,37 @@ class VitExitLayers(BasePraxisLayer):
         else:
             feat = normed
 
-        if w_out is not None or d_in != d_out:
-            lin = Linear(input_dims=d_in, output_dims=d_out, params_init=self.params_init)
-            feat = lin(feat, w=w_out) if w_out is not None else lin(feat, w=np.eye(d_in, d_out))
+        if self.pre_logits_Dims > 0:
+            pre_ff = self.get_sublayer(
+                "pre_logits",
+                None,
+                FeedForward(
+                    input_dims=feat.shape[-1],
+                    output_dims=self.pre_logits_Dims,
+                    activation_tpl=self.pre_logits_activation_tpl or Tanh(),
+                    params_init=self.params_init,
+                ),
+            )
+            feat = pre_ff(feat)
+
+        if w_out is not None or feat.shape[-1] != d_out:
+            lin = self.get_sublayer(
+                "output_fc",
+                None,
+                Linear(
+                    input_dims=feat.shape[-1],
+                    output_dims=d_out,
+                    weight_init=WeightInit(method="ones", scale=1.0)
+                    if (self.params_init is None or self.params_init.method == "zeros")
+                    else self.params_init,
+                    params_init=self.params_init,
+                ),
+            )
+            feat = lin(feat, w=w_out) if isinstance(lin, Linear) else lin(feat)
         if self.output_fc_has_bias and b_out is not None:
-            feat = feat + np.asarray(b_out)
+            feat = feat + _ops.asarray(b_out)
         if self.output_fc_tanh:
-            feat = np.tanh(feat)
+            feat = _ops.tanh(feat)
         return feat
 
 
@@ -742,23 +820,25 @@ class VisionTransformer(BasePraxisLayer):
         Returns:
             ViT output representation `Tensor`.
         """
-        entry = instantiate_layer(
-            self.entry_layers_tpl, VitEntryLayers(params_init=self.params_init)
+        entry = self.get_sublayer(
+            "entry", self.entry_layers_tpl, VitEntryLayers(params_init=self.params_init)
         )
         tokens = entry(inputs)
-        backbone = instantiate_layer(
+        backbone = self.get_sublayer(
+            "transformer",
             self.transformer_layers_tpl,
             StackedTransformer(
                 num_layers=1, model_dims=tokens.shape[-1], params_init=self.params_init
             ),
         )
         encoded = backbone(tokens)
-        exit_layer = instantiate_layer(
+        exit_layer = self.get_sublayer(
+            "exit",
             self.exit_layers_tpl,
             VitExitLayers(
                 hidden_dim=encoded.shape[-1],
                 output_dim=encoded.shape[-1],
-                pooled=(np.asarray(inputs).ndim == 4),
+                pooled=(_ops.asarray(inputs).ndim == 4),
                 params_init=self.params_init,
             ),
         )
@@ -800,9 +880,10 @@ class ClassificationModel(BasePraxisLayer):
         Returns:
             Class probabilities or per-example loss `Tensor`.
         """
-        net = instantiate_layer(self.network_tpl, Identity())
+        net = self.get_sublayer("network", self.network_tpl, Identity())
         feats = net(inputs)
-        sm = instantiate_layer(
+        sm = self.get_sublayer(
+            "softmax",
             self.softmax_tpl,
             FullSoftmax(
                 label_smoothing_prob=self.label_smoothing_prob, params_init=self.params_init
@@ -840,18 +921,21 @@ class ClassificationMLPModel(ClassificationModel):
         Returns:
             Class probabilities or per-example loss `Tensor`.
         """
-        net = instantiate_layer(self.network_tpl, Identity())
+        net = self.get_sublayer("network", self.network_tpl, Identity())
         feats = net(inputs)
         default_mlp = MLPBlock(
-            num_layers=1, hidden_dims=feats.shape[-1], params_init=self.params_init
+            num_layers=1,
+            hidden_dims=feats.shape[-1],
+            params_init=(
+                WeightInit(method="ones", scale=1.0)
+                if (self.params_init is None or self.params_init.method == "zeros")
+                else self.params_init
+            ),
         )
-        mlp = instantiate_layer(self.mlp_tpl, default_mlp)
-        feats = (
-            mlp(feats, w=np.eye(feats.shape[-1]))
-            if isinstance(mlp, (MLPBlock, FeedForward)) and self.mlp_tpl is None
-            else mlp(feats)
-        )
-        sm = instantiate_layer(
+        mlp = self.get_sublayer("mlp", self.mlp_tpl, default_mlp)
+        feats = mlp(feats)
+        sm = self.get_sublayer(
+            "softmax",
             self.softmax_tpl,
             FullSoftmax(
                 label_smoothing_prob=self.label_smoothing_prob, params_init=self.params_init

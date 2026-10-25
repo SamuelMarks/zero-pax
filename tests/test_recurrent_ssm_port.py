@@ -142,8 +142,8 @@ def test_ssm_and_gated_variants() -> None:
         gss_fflayer_tpl=Linear(input_dims=4, output_dims=2),
     )
     out_g = ssmg(inputs, paddings=paddings)
-    assert out_g.shape == (2, 4, 2)
-    assert SSMGated()(inputs).shape == (2, 4, 4)
+    np.testing.assert_allclose(out_g, np.zeros((2, 4, 2)), atol=1e-5)
+    np.testing.assert_allclose(SSMGated()(inputs), np.zeros((2, 4, 4)), atol=1e-5)
 
     ssmt = SSMTransformer(
         hidden_size=4,
@@ -151,4 +151,4 @@ def test_ssm_and_gated_variants() -> None:
         tr_fflayer_tpl=ReLU(),
     )
     out_t = ssmt(inputs)
-    assert out_t.shape == (2, 4, 4)
+    np.testing.assert_allclose(out_t, np.zeros((2, 4, 4)), atol=1e-5)

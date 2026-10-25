@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12']
     steps:
     - uses: actions/checkout@v7
 
@@ -26,10 +26,11 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ruff pytest pytest-cov mypy interrogate build
-        if [ -f "requirements.txt" ]; then pip install -r requirements.txt || true; fi
-        if [ -f "requirements-test.txt" ]; then pip install -r requirements-test.txt || true; fi
-        if [ -f "pyproject.toml" ]; then pip install -e . || true; fi
+        pip install ruff pytest pytest-cov mypy interrogate build numpy pydantic
+        pip install "cdd @ git+https://github.com/offscale/cdd-python.git@master"
+        pip install -r requirements.txt
+        pip install --no-deps "ml-ecosystem-snapshots @ https://github.com/SamuelMarks/ml-ecosystem-snapshots/releases/download/v0.0.4/ml_ecosystem_snapshots-0.0.4-py3-none-any.whl"
+        pip install -e .
 
     - name: Check Code Formatting (Ruff)
       run: ruff format --check src scripts tests
@@ -49,10 +50,10 @@ jobs:
     - name: Check Forbidden Typing & Reflection Hacks
       run: python scripts/lint_typing_and_hacks.py
 
-    - name: Check Dependencies
+    - name: Check Disallowed Third-Party Dependencies
       run: python scripts/check_dependencies.py
 
-    - name: Check API Parity (Snapshots)
+    - name: Check API & Signature Compliance (100%)
       run: python scripts/check_compliance.py
 
     - name: Test & Coverage (100% Line, Branch, Function)

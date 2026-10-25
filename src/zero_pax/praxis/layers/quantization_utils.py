@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
 from zero_pax.praxis.layers.activations import Identity, LeakyReLU, ReLU, Sigmoid, Tanh
 from zero_pax.praxis.layers.normalizations import LayerNorm
 from zero_pax.types import (
     ActivationType,
-    CallableLayer,
     PoolingOutput,
     QuantizerOutput,
     SplitDimsMapping,
@@ -30,8 +29,8 @@ def _l2_normalize(x: Tensor, epsilon: float = 1e-6) -> Tensor:
     Returns:
         L2-normalized `Tensor`.
     """
-    norm_sq = np.sum(np.square(x), axis=-1, keepdims=True)
-    return x / np.sqrt(np.maximum(norm_sq, epsilon))
+    norm_sq = _ops.sum(_ops.square(x), axis=-1, keepdims=True)
+    return x / _ops.sqrt(_ops.maximum(norm_sq, epsilon))
 
 
 class VectorQuantization(BasePraxisLayer):
@@ -73,38 +72,38 @@ class VectorQuantization(BasePraxisLayer):
         Returns:
             Tuple `(quantized_tensor, nearest_codes, {"loss": commitment_loss})`.
         """
-        z = np.asarray(inputs)
+        z = self._to_tensor(inputs)
         k_clusters = max(1, self.num_clusters)
         d_dim = z.shape[-1]
 
         cb: Tensor
         if codebook is None:
             if k_clusters == 1:
-                return z, np.zeros_like(z), {"loss": 0.0}
+                return z, _ops.zeros(z.shape[:-1]), {"loss": 0.0}
             cb = self.get_variable(
                 "codebook",
                 (k_clusters, d_dim),
                 init=WeightInit(method="xavier", scale=1.0),
             )
         else:
-            cb = np.asarray(codebook)
+            cb = _ops.asarray(codebook)
 
         do_norm = self.prenormalize or self.normalize_latent_vector
         z_lookup = _l2_normalize(z, self.epsilon) if do_norm else z
         cb_lookup = _l2_normalize(cb, self.epsilon) if do_norm else cb
 
-        flat_z = np.reshape(z_lookup, (-1, d_dim))
-        z_sq = np.sum(np.square(flat_z), axis=-1, keepdims=True)
-        cb_sq = np.reshape(np.sum(np.square(cb_lookup), axis=-1), (1, -1))
-        dot_zc = np.einsum("nd,kd->nk", flat_z, cb_lookup)
+        flat_z = _ops.reshape(z_lookup, (-1, d_dim))
+        z_sq = _ops.sum(_ops.square(flat_z), axis=-1, keepdims=True)
+        cb_sq = _ops.reshape(_ops.sum(_ops.square(cb_lookup), axis=-1), (1, -1))
+        dot_zc = _ops.einsum("nd,kd->nk", flat_z, cb_lookup)
         dists = z_sq + cb_sq - 2.0 * dot_zc
 
-        codes = np.argmin(dists, axis=-1)
-        one_hot = np.reshape(codes, (-1, 1)) == np.arange(cb.shape[0])
-        quantized_flat = np.einsum("nk,kd->nd", one_hot, cb)
-        quantized = np.reshape(quantized_flat, z.shape)
-        codes_reshaped = np.reshape(codes, z.shape[:-1])
-        loss = 0.25 * np.mean(np.square(z - quantized))
+        codes = _ops.argmin(dists, axis=-1)
+        one_hot = _ops.reshape(codes, (-1, 1)) == _ops.arange(cb.shape[0])
+        quantized_flat = _ops.einsum("nk,kd->nd", one_hot, cb)
+        quantized = _ops.reshape(quantized_flat, z.shape)
+        codes_reshaped = _ops.reshape(codes, z.shape[:-1])
+        loss = 0.25 * _ops.mean(_ops.square(z - quantized))
         return quantized, codes_reshaped, {"loss": loss}
 
 
@@ -153,13 +152,13 @@ class VectorQuantizer(BasePraxisLayer):
         Returns:
             Tuple `(quantized_tensor, nearest_codes, {"loss": weighted_loss})`.
         """
-        z = np.asarray(inputs)
+        z = self._to_tensor(inputs)
         k_cls = max(1, self.num_latent_classes)
         d_dim = z.shape[-1]
 
         cb: Tensor | None
         if codebook is not None:
-            cb = np.asarray(codebook)
+            cb = _ops.asarray(codebook)
         elif k_cls > 1:
             cb = self.get_variable(
                 "codebook",
@@ -176,6 +175,8 @@ class VectorQuantizer(BasePraxisLayer):
         vq = VectorQuantization(
             num_clusters=k_cls,
             dim_per_head=max(1, self.latent_dim if self.latent_dim > 0 else d_dim),
+            parent=self,
+            name="vq",
         )
         q, c, info = vq(z_in, codebook=cb)
         raw_loss = info["loss"]
@@ -242,9 +243,10 @@ class RandomVectorQuantizer(BasePraxisLayer):
         Returns:
             Tuple `(quantized, codes, {"loss": loss})`.
         """
-        z = np.asarray(inputs)
+        z = self._to_tensor(inputs)
         if self.stack_ratio > 1 or self.stacking_tpl is not None:
-            stacker = instantiate_layer(
+            stacker = self.get_sublayer(
+                "stacking",
                 self.stacking_tpl,
                 StackingOverTime(stride=max(1, self.stack_ratio)),
             )
@@ -260,28 +262,24 @@ class RandomVectorQuantizer(BasePraxisLayer):
         num_c = (
             self.num_latent_classes
             if (self.num_latent_classes is not None and self.num_latent_classes > 0)
-            else 1
+            else 2
         )
         seed_val = self.random_seed if self.random_seed is not None else 1234
 
-        if (
-            proj_w is None
-            and self.projection_dim is None
-            and self.num_latent_classes is None
-            and codebook is None
-        ):
-            return z, np.zeros_like(z), {"loss": 0.0}
-
-        w_proj = (
-            np.asarray(proj_w)
-            if proj_w is not None
-            else WeightInit(method="xavier", scale=1.0, seed=seed_val).init_tensor((in_d, proj_d))
+        w_proj = self.get_variable(
+            "proj_w",
+            (in_d, proj_d),
+            explicit=proj_w,
+            init=WeightInit(method="xavier", scale=1.0, seed=seed_val),
         )
-        z_proj = np.einsum("...d,dp->...p", z, w_proj)
+        z_proj = _ops.einsum("...d,dp->...p", z, w_proj)
 
         cb_init = self.codebook_init or WeightInit(method="normal", scale=1.0, seed=seed_val + 17)
-        cb_t = (
-            np.asarray(codebook) if codebook is not None else cb_init.init_tensor((num_c, proj_d))
+        cb_t = self.get_variable(
+            "codebook",
+            (num_c, proj_d),
+            explicit=codebook,
+            init=cb_init,
         )
         vq = VectorQuantizer(
             latent_dim=proj_d,
@@ -289,6 +287,8 @@ class RandomVectorQuantizer(BasePraxisLayer):
             num_groups=self.num_groups,
             normalize_latent_vector=self.normalize_latent_vector,
             normalize_codebook=self.normalize_codebook,
+            parent=self,
+            name="quantizer",
         )
         return vq(z_proj, codebook=cb_t)
 
@@ -342,28 +342,35 @@ class Ngrammer(BasePraxisLayer):
         Returns:
             N-gram augmented `Tensor` of shape `[B, T, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if self.ln_tpl is not None:
-            ln = instantiate_layer(self.ln_tpl, LayerNorm(dim=x.shape[-1]))
+            ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=x.shape[-1]))
             x = ln(x)
         if input_ids is None:
             return x
 
-        ids = np.asarray(input_ids)
+        ids = _ops.asarray(input_ids)
         v_sz = max(2, self.ngram_vocab_size)
         d_dim = x.shape[-1]
         table = self.get_variable("ngram_table", (v_sz, d_dim), explicit=ngram_table)
 
-        prev_ids = np.pad(ids[:, :-1], ((0, 0), (1, 0)), mode="constant", constant_values=0.0)
-        bigram_ids = (ids * 31 + prev_ids * 17) - np.floor((ids * 31 + prev_ids * 17) / v_sz) * v_sz
-        bigram_ids = np.clip(bigram_ids, 0, v_sz - 1)
-        one_hot = np.reshape(bigram_ids, list(bigram_ids.shape) + [1]) == np.arange(v_sz)
-        ngram_embs = np.einsum("btv,vd->btd", one_hot, table)
+        prev_ids = _ops.pad(ids[:, :-1], ((0, 0), (1, 0)), mode="constant", constant_values=0.0)
+        bigram_ids = (ids * 31 + prev_ids * 17) - _ops.floor(
+            (ids * 31 + prev_ids * 17) / v_sz
+        ) * v_sz
+        bigram_ids = _ops.clip(bigram_ids, 0, v_sz - 1)
+
+        if self.emb_layer_tpl is not None:
+            emb_layer = self.get_sublayer("emb_layer", self.emb_layer_tpl, Identity())
+            ngram_embs = emb_layer(bigram_ids)
+        else:
+            one_hot = _ops.reshape(bigram_ids, list(bigram_ids.shape) + [1]) == _ops.arange(v_sz)
+            ngram_embs = _ops.einsum("btv,vd->btd", one_hot, table)
 
         out = x + ngram_embs
         if paddings is not None:
-            pad_t = np.asarray(paddings)
-            out = out * (1.0 - np.expand_dims(pad_t, -1))
+            pad_t = _ops.asarray(paddings)
+            out = out * (1.0 - _ops.expand_dims(pad_t, -1))
         return out
 
 
@@ -432,7 +439,7 @@ class VQNgrammer(Ngrammer):
         Returns:
             VQ-Ngrammer augmented `Tensor` of shape `[B, T, D]`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         resolved_ids: TensorOrScalar | None = input_ids
         if resolved_ids is None and (self.num_clusters > 1 or codebook is not None):
             vq = VectorQuantization(
@@ -443,6 +450,8 @@ class VQNgrammer(Ngrammer):
                 epsilon=self.epsilon,
                 prenormalize=self.prenormalize,
                 params_init=self.params_init,
+                parent=self,
+                name="vq",
             )
             _, codes, _ = vq(x, codebook=codebook)
             resolved_ids = codes
@@ -531,20 +540,26 @@ class BregmanPCA(BasePraxisLayer):
             **kwargs: Additional keyword arguments.
 
         Returns:
-            Tuple `(reconstructed_tensor, {"loss": reconstruction_loss})`.
+            Tuple `(reconstructed_or_latent_tensor, {"loss": reconstruction_loss})`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_dim = x.shape[-1]
         k_comp = min(max(1, self.num_components), d_dim)
 
-        comp_t = np.eye(d_dim)[:k_comp] if components is None else np.asarray(components)
+        comp_t = (
+            _ops.eye(d_dim)[:k_comp]
+            if components is None
+            else self.get_variable("components", (k_comp, d_dim), explicit=components)
+        )
         if self.normalize_weight and components is not None:
             comp_t = _l2_normalize(comp_t, self.epsilon)
-        mu_t = np.zeros((d_dim,)) if mean_vec is None else np.asarray(mean_vec)
+        mu_t = self.get_variable(
+            "mean", (d_dim,), explicit=mean_vec, init=WeightInit(method="zeros")
+        )
 
         centered = x - mu_t if self.use_bias else x
-        coeffs = np.einsum("...d,kd->...k", centered, comp_t)
-        recon = np.einsum("...k,kd->...d", coeffs, comp_t)
+        coeffs = _ops.einsum("...d,kd->...k", centered, comp_t)
+        recon = _ops.einsum("...k,kd->...d", coeffs, comp_t)
         if self.use_bias:
             recon = recon + mu_t
 
@@ -558,8 +573,8 @@ class BregmanPCA(BasePraxisLayer):
         elif act_mode == "TANH":
             recon = Tanh()(recon)
 
-        loss = np.mean(np.square(x - recon))
-        return recon, {"loss": loss}
+        loss = _ops.mean(_ops.square(x - recon))
+        return (recon if self.reconstruction else coeffs), {"loss": loss}
 
 
 class Dropout(BasePraxisLayer):
@@ -597,13 +612,22 @@ class Dropout(BasePraxisLayer):
         Returns:
             Dropped-out `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if self.keep_prob <= 0.0:
-            return np.zeros_like(x)
+            return _ops.zeros_like(x)
         if self.keep_prob >= 1.0 and mask is None:
             return x
         if mask is not None:
-            return (x * np.asarray(mask)) / self.keep_prob
+            return (x * _ops.asarray(mask)) / self.keep_prob
+        if self.dropout_at_eval:
+            m_shape = tuple(self.noise_shape) if self.noise_shape is not None else x.shape
+            total_m = 1
+            for d in m_shape:
+                total_m *= max(1, d)
+            u_raw = _ops.arange(1, total_m + 1) * 0.6180339887498949
+            u_vals = u_raw - _ops.floor(u_raw)
+            det_mask = _ops.reshape((u_vals < self.keep_prob) * 1.0, m_shape)
+            return (x * det_mask) / self.keep_prob
         return x
 
 
@@ -638,12 +662,12 @@ class StochasticResidual(BasePraxisLayer):
         Returns:
             Combined residual `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if residual is None or self.survival_prob <= 0.0:
             return x
-        res_t = np.asarray(residual)
+        res_t = _ops.asarray(residual)
         if survival_mask is not None:
-            res_t = (res_t * np.asarray(survival_mask)) / self.survival_prob
+            res_t = (res_t * _ops.asarray(survival_mask)) / self.survival_prob
         return x + self.residual_weight * res_t
 
 
@@ -684,18 +708,18 @@ class MultitaskResidualAdapter(BasePraxisLayer):
         Returns:
             Adapted `Tensor` of the same shape as `inputs`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         d_dim = self.input_dims if self.input_dims > 0 else x.shape[-1]
         b_dim = self.bottleneck_dims if self.bottleneck_dims > 0 else max(1, d_dim // 4)
 
-        normed = instantiate_layer(self.norm_tpl, LayerNorm(dim=d_dim))(x)
+        normed = self.get_sublayer("norm", self.norm_tpl, LayerNorm(dim=d_dim))(x)
         wd_t = self.get_variable("w_down", (d_dim, b_dim), explicit=w_down)
         wu_t = self.get_variable("w_up", (b_dim, d_dim), explicit=w_up)
 
-        hidden = np.einsum("...d,db->...b", normed, wd_t)
-        act = instantiate_layer(self.activation_tpl, ReLU())
+        hidden = _ops.einsum("...d,db->...b", normed, wd_t)
+        act = self.get_sublayer("activation", self.activation_tpl, ReLU())
         hidden = act(hidden)
-        delta = np.einsum("...b,bd->...d", hidden, wu_t)
+        delta = _ops.einsum("...b,bd->...d", hidden, wu_t)
         return x + delta
 
 
@@ -730,7 +754,7 @@ class TemporalShifting(BasePraxisLayer):
         Returns:
             Temporally shifted `Tensor` of the same shape as `inputs`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         shift_val = (
             self.shift if self.shift != 0 else int(self.shift_range_ms * self.sample_rate / 1000.0)
         )
@@ -740,15 +764,15 @@ class TemporalShifting(BasePraxisLayer):
         t_len = x.shape[ax]
         shift_frames = min(shift_val, t_len)
         pad_width = tuple((shift_frames, 0) if i == ax else (0, 0) for i in range(x.ndim))
-        padded = np.pad(x, pad_width, mode="constant", constant_values=0.0)
+        padded = _ops.pad(x, pad_width, mode="constant", constant_values=0.0)
         if ax == 1 and x.ndim == 3:
             return padded[:, :t_len, :]
         perm = [ax] + [i for i in range(x.ndim) if i != ax]
         inv_perm = [0] * x.ndim
         for idx, p in enumerate(perm):
             inv_perm[p] = idx
-        trans = np.transpose(padded, perm)[:t_len]
-        return np.transpose(trans, inv_perm)
+        trans = _ops.transpose(padded, perm)[:t_len]
+        return _ops.transpose(trans, inv_perm)
 
 
 class StackingOverTime(BasePraxisLayer):
@@ -788,13 +812,13 @@ class StackingOverTime(BasePraxisLayer):
         Returns:
             Stacked `Tensor` of shape `[B, T_out, D * window]`, or `(stacked, out_paddings)` if `paddings` is provided.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         window_size = self.left_context + 1 + self.right_context
         st = max(1, self.stride)
 
         if window_size == 1 and st == 1:
             if paddings is not None:
-                return x, np.asarray(paddings)
+                return x, _ops.asarray(paddings)
             return x
 
         b_sz, t_len, d_dim = x.shape
@@ -802,7 +826,7 @@ class StackingOverTime(BasePraxisLayer):
         pad_right = self.right_context
 
         if pad_left > 0 or pad_right > 0:
-            x_pad = np.pad(
+            x_pad = _ops.pad(
                 x,
                 ((0, 0), (pad_left, pad_right), (0, 0)),
                 mode="edge"
@@ -814,18 +838,13 @@ class StackingOverTime(BasePraxisLayer):
             x_pad = x
 
         out_t = (t_len + st - 1) // st
-        windows = []
-        for idx in range(out_t):
-            start = idx * st
-            win = x_pad[:, start : start + window_size, :]
-            windows.append(np.reshape(win, (b_sz, 1, window_size * d_dim)))
-
-        stacked = np.concatenate(windows, axis=1)
+        patches = _ops.extract_patches_1d(x_pad, out_t, window_size, st)
+        stacked = _ops.reshape(patches, (b_sz, out_t, window_size * d_dim))
 
         if paddings is not None:
-            pad_t = np.asarray(paddings)
+            pad_t = _ops.asarray(paddings)
             if pad_left > 0 or pad_right > 0:
-                p_pad = np.pad(
+                p_pad = _ops.pad(
                     pad_t,
                     ((0, 0), (pad_left, pad_right)),
                     mode="constant",
@@ -833,16 +852,13 @@ class StackingOverTime(BasePraxisLayer):
                 )
             else:
                 p_pad = pad_t
-            p_wins = []
-            for idx in range(out_t):
-                start = idx * st
-                w_p = p_pad[:, start : start + window_size]
-                if self.padding_reduce_option == "reduce_max":
-                    red = np.max(w_p, axis=-1, keepdims=True)
-                else:
-                    red = np.min(w_p, axis=-1, keepdims=True)
-                p_wins.append(red)
-            out_pad = np.concatenate(p_wins, axis=1)
+            p_patches = _ops.extract_patches_1d(
+                _ops.expand_dims(p_pad, axis=-1), out_t, window_size, st
+            )[:, :, :, 0]
+            if self.padding_reduce_option == "reduce_max":
+                out_pad = _ops.max(p_patches, axis=2)
+            else:
+                out_pad = _ops.min(p_patches, axis=2)
             return stacked, out_pad
 
         return stacked
@@ -885,15 +901,15 @@ class MaskedLmDataAugmenter(BasePraxisLayer):
         Returns:
             Tuple `(augmented_ids, mask_weights)`.
         """
-        ids = np.asarray(inputs)
+        ids = _ops.asarray(inputs)
         if mask_positions is None:
-            return ids, np.zeros_like(ids)
+            return ids, _ops.zeros_like(ids)
 
-        pos_mask = np.asarray(mask_positions)
+        pos_mask = _ops.asarray(mask_positions)
         if paddings is not None:
-            pos_mask = pos_mask * (1.0 - np.asarray(paddings))
+            pos_mask = pos_mask * (1.0 - _ops.asarray(paddings))
 
-        augmented = np.where(pos_mask > 0.0, float(self.mask_token_id), ids)
+        augmented = _ops.where(pos_mask > 0.0, float(self.mask_token_id), ids)
         return augmented, pos_mask
 
 
@@ -948,28 +964,33 @@ class SpectrumAugmenter(BasePraxisLayer):
         Returns:
             Augmented spectrogram `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if self.augment_at_eval and x.ndim >= 3:
             t_len = x.shape[1]
             f_len = x.shape[2]
             if self.freq_mask_count > 0 and self.freq_mask_max_bins > 0:
                 f_width = min(self.freq_mask_max_bins, f_len // 2)
                 if f_width > 0:
-                    f_idx = np.arange(f_len)
-                    f_keep = ((f_idx < 0) | (f_idx >= f_width)) * 1.0
+                    f_idx = _ops.arange(f_len)
+                    f_keep = (f_idx >= f_width) * 1.0
                     f_shape = [1, 1, f_len] + [1] * (x.ndim - 3)
-                    x = x * np.reshape(f_keep, f_shape)
+                    x = x * _ops.reshape(f_keep, f_shape)
             if self.time_mask_count > 0 and self.time_mask_max_frames > 0:
-                t_width = min(self.time_mask_max_frames, t_len // 2)
+                max_t = (
+                    int(t_len * self.time_mask_max_ratio)
+                    if self.use_dynamic_time_mask_max_frames
+                    else self.time_mask_max_frames
+                )
+                t_width = min(max_t, t_len // 2)
                 if t_width > 0:
-                    t_idx = np.arange(t_len)
-                    t_keep = ((t_idx < 0) | (t_idx >= t_width)) * 1.0
+                    t_idx = _ops.arange(t_len)
+                    t_keep = (t_idx >= t_width) * 1.0
                     t_shape = [1, t_len] + [1] * (x.ndim - 2)
-                    x = x * np.reshape(t_keep, t_shape)
+                    x = x * _ops.reshape(t_keep, t_shape)
         if paddings is not None and x.ndim >= 2:
-            pad_t = np.asarray(paddings)
+            pad_t = _ops.asarray(paddings)
             pad_shape = [pad_t.shape[0], pad_t.shape[1]] + [1] * (x.ndim - 2)
-            x = x * (1.0 - np.reshape(pad_t, pad_shape))
+            x = x * (1.0 - _ops.reshape(pad_t, pad_shape))
         return x
 
 
@@ -998,11 +1019,11 @@ class Sequential(BasePraxisLayer):
         Returns:
             Final output `Tensor`.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         if not self.layers:
             return out
-        for sub in self.layers:
-            layer_fn = instantiate_layer(sub, Identity())
+        for idx, sub in enumerate(self.layers):
+            layer_fn = instantiate_layer(sub, Identity(), parent=self, name=f"layer_{idx}")
             out = layer_fn(out)
         return out
 
@@ -1056,12 +1077,12 @@ class Repeat(BasePraxisLayer):
         Returns:
             Output `Tensor` after `x_times` applications.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         tpl = self.sub_layer if self.sub_layer is not None else self.sub_tpl
         if tpl is None:
             return out
 
-        target_layer: CallableLayer = instantiate_layer(tpl, Identity())
+        target_layer = self.get_sublayer(self.sublayer_name or "sub", tpl, Identity())
         iters = self.x_times if self.x_times > 0 else self.num_repeats
         for _ in range(max(0, iters)):
             out = target_layer(out)
@@ -1121,10 +1142,10 @@ class LayerwiseShardablePipelined(BasePraxisLayer):
         Returns:
             Output `Tensor` after all pipeline stages.
         """
-        out = np.asarray(inputs)
+        out = self._to_tensor(inputs)
         if self.single_stage_body is None:
             return out
-        stage_fn = instantiate_layer(self.single_stage_body, Identity())
+        stage_fn = self.get_sublayer("single_stage_body", self.single_stage_body, Identity())
         repeats = max(self.CircularRepeat, self.circular_repeat, 1)
         total_steps = max(1, self.num_stages) * repeats
         for _ in range(total_steps):

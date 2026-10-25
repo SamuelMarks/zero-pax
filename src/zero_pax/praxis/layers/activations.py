@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer
 from zero_pax.types import Tensor, TensorOrScalar
 
@@ -26,7 +26,7 @@ class BaseActivation(BasePraxisLayer):
         Returns:
             Activated `Tensor`.
         """
-        return np.asarray(inputs)
+        return self._to_tensor(inputs)
 
 
 class CubedReLU(BaseActivation):
@@ -48,8 +48,8 @@ class CubedReLU(BaseActivation):
         Returns:
             Cubed ReLU output `Tensor`.
         """
-        x = np.asarray(inputs)
-        return np.maximum(0.0, x) ** 3
+        x = self._to_tensor(inputs)
+        return _ops.maximum(0.0, x) ** 3
 
 
 class ELU(BaseActivation):
@@ -77,8 +77,8 @@ class ELU(BaseActivation):
         Returns:
             ELU activated `Tensor`.
         """
-        x = np.asarray(inputs)
-        return np.where(x > 0.0, x, self.alpha * (np.exp(x) - 1.0))
+        x = self._to_tensor(inputs)
+        return _ops.where(x > 0.0, x, self.alpha * (_ops.exp(x) - 1.0))
 
 
 class GELU(BaseActivation):
@@ -106,11 +106,11 @@ class GELU(BaseActivation):
         Returns:
             GELU activated `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         if self.approximate:
-            cdf = 0.5 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * (x**3))))
+            cdf = 0.5 * (1.0 + _ops.tanh(_ops.sqrt(2.0 / _ops.pi) * (x + 0.044715 * (x**3))))
             return x * cdf
-        return 0.5 * x * (1.0 + np.erf(x / np.sqrt(2.0)))
+        return 0.5 * x * (1.0 + _ops.erf(x / _ops.sqrt(2.0)))
 
 
 class Identity(BaseActivation):
@@ -142,8 +142,8 @@ class LeakyReLU(BaseActivation):
         Returns:
             LeakyReLU activated `Tensor`.
         """
-        x = np.asarray(inputs)
-        return np.where(x > 0.0, x, self.negative_slope * x)
+        x = self._to_tensor(inputs)
+        return _ops.where(x > 0.0, x, self.negative_slope * x)
 
 
 class ReLU(BaseActivation):
@@ -165,7 +165,7 @@ class ReLU(BaseActivation):
         Returns:
             ReLU activated `Tensor`.
         """
-        return np.maximum(0.0, np.asarray(inputs))
+        return _ops.maximum(0.0, self._to_tensor(inputs))
 
 
 class ReLU6(BaseActivation):
@@ -187,7 +187,7 @@ class ReLU6(BaseActivation):
         Returns:
             ReLU6 activated `Tensor`.
         """
-        return np.minimum(np.maximum(0.0, np.asarray(inputs)), 6.0)
+        return _ops.minimum(_ops.maximum(0.0, self._to_tensor(inputs)), 6.0)
 
 
 class Sigmoid(BaseActivation):
@@ -209,8 +209,8 @@ class Sigmoid(BaseActivation):
         Returns:
             Sigmoid activated `Tensor`.
         """
-        x = np.asarray(inputs)
-        return 1.0 / (1.0 + np.exp(-x))
+        x = self._to_tensor(inputs)
+        return 1.0 / (1.0 + _ops.exp(-x))
 
 
 class Swish(BaseActivation):
@@ -232,8 +232,8 @@ class Swish(BaseActivation):
         Returns:
             Swish activated `Tensor`.
         """
-        x = np.asarray(inputs)
-        return x / (1.0 + np.exp(-x))
+        x = self._to_tensor(inputs)
+        return x / (1.0 + _ops.exp(-x))
 
 
 class SiLU(Swish):
@@ -259,7 +259,7 @@ class SquaredReLU(BaseActivation):
         Returns:
             SquaredReLU activated `Tensor`.
         """
-        return np.square(np.maximum(0.0, np.asarray(inputs)))
+        return _ops.square(_ops.maximum(0.0, self._to_tensor(inputs)))
 
 
 class Tanh(BaseActivation):
@@ -281,7 +281,7 @@ class Tanh(BaseActivation):
         Returns:
             Tanh activated `Tensor`.
         """
-        return np.tanh(np.asarray(inputs))
+        return _ops.tanh(self._to_tensor(inputs))
 
 
 __all__ = [

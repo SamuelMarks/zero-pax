@@ -103,6 +103,18 @@ def test_feedforward_and_mlp_block() -> None:
     mlp_custom = MLPBlock(num_layers=2, ff_tpl=Identity())
     np.testing.assert_allclose(mlp_custom(inputs), inputs, atol=1e-5)
 
+    from zero_pax.types import WeightInit
+
+    ff_inits = FeedForward(
+        input_dims=4,
+        output_dims=4,
+        weight_init=WeightInit(method="ones", scale=1.0),
+        bias_init=WeightInit(method="ones", scale=2.0),
+    )
+    np.testing.assert_allclose(
+        ff_inits(np.ones((2, 4), dtype=np.float32)), np.full((2, 4), 6.0), atol=1e-5
+    )
+
 
 def test_per_dim_scale() -> None:
     """Verify `PerDimScale` multiplies each feature dimension by its scale parameter."""

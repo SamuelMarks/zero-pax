@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zero_pax import _tensor_ops as numpy
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis import layers
 from zero_pax.praxis.base import BasePraxisLayer
 from zero_pax.praxis.layers import (
@@ -134,21 +134,21 @@ def __call__(
         Converted `Tensor` or `None`.
     """
     if inputs is not None:
-        return numpy.asarray(inputs)
+        return _ops.asarray(inputs)
     if args:
-        return numpy.asarray(args[0])
+        return _ops.asarray(args[0])
     return None
 
 
 def init_weights(
-    layer: BasePraxisLayer | Layer | None = None,
+    layer: BasePraxisLayer | None = None,
     *args: TensorOrScalar,
     **kwargs: TensorOrScalar,
 ) -> dict[str, Tensor]:
     """Initialize and return a parameter weight dictionary for `layer` if provided.
 
     Args:
-        layer: Optional `BasePraxisLayer` or `Layer` whose registered parameters should be exported.
+        layer: Optional `BasePraxisLayer` whose registered parameters should be exported.
         *args: Optional positional arguments.
         **kwargs: Optional keyword arguments.
 
@@ -157,7 +157,7 @@ def init_weights(
     """
     if layer is not None:
         layer.setup()
-        return {name: numpy.asarray(param()) for name, param in layer.params.items()}
+        return {name: _ops.asarray(param()) for name, param in layer.params.items()}
     return {}
 
 
@@ -181,7 +181,7 @@ class Layer(BasePraxisLayer):
         *args: TensorOrScalar,
         **kwargs: TensorOrScalar,
     ) -> Tensor:
-        """Pass `inputs` through the base `Layer` as a `Tensor`.
+        """Pass `inputs` through the base `Layer` by delegating to `BasePraxisLayer.__call__`.
 
         Args:
             inputs: Input tensor or scalar.
@@ -191,7 +191,7 @@ class Layer(BasePraxisLayer):
         Returns:
             Converted `Tensor`.
         """
-        return numpy.asarray(inputs)
+        return super().__call__(inputs, *args, **kwargs)
 
 
 __all__ = [
@@ -201,6 +201,7 @@ __all__ = [
     "BaseActivation",
     "BaseNormalization",
     "BaseParameter",
+    "BasePraxisLayer",
     "BatchNorm",
     "BertModel",
     "BiTemperedLoss",
@@ -222,6 +223,7 @@ __all__ = [
     "DotProductAttentionXL",
     "Dropout",
     "ELU",
+    "EXPORTED_NAMES",
     "Einsum",
     "EinsumOp",
     "Embedding",
@@ -291,6 +293,7 @@ __all__ = [
     "Swish",
     "Tanh",
     "TemporalShifting",
+    "Tensor",
     "TrainablePositionalEmbedding",
     "Transformer",
     "TransformerEncoderDecoder",
@@ -308,5 +311,6 @@ __all__ = [
     "__call__",
     "init_weights",
     "layers",
-    "numpy",
 ]
+
+EXPORTED_NAMES: frozenset[str] = frozenset(__all__)

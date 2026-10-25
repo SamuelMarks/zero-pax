@@ -3,11 +3,11 @@
 This document outlines the exhaustive plan for implementing the pure-numpy mathematical semantics of the 108 Praxis layers.
 
 ## Global Objectives
-* [x] Replace dummy Pydantic fields with strict `numpy` array validation.
+* [x] Replace dummy Pydantic fields with strict `Tensor` validation.
 * [x] Implement `__call__` / `forward` methods for all modules.
-* [x] Define state initialization (`init_weights`, `init_states`) purely in NumPy.
+* [x] Define state initialization (`init_weights`) purely in Python.
 * [x] Implement mathematical parity tests against expected formulas (100% test coverage).
-* [x] No third-party dependencies besides `numpy` and `pydantic`.
+* [x] No third-party runtime dependencies besides Pydantic and ml-switcheroo-ir (`Tensor`).
 
 ## Activations
 * [x] Implement `BaseActivation` semantics

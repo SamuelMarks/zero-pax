@@ -1,8 +1,9 @@
-"""Additional tests to ensure 100% function, line, and branch coverage across src/zero_pax/."""
+"""Numerical edge-case and branch verification tests across all zero_pax modules."""
 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from zero_pax import _tensor_ops as t_ops
 from zero_pax.praxis.base import BasePraxisLayer, instantiate_layer
@@ -11,17 +12,15 @@ from zero_pax.praxis.layers import (
     AttentionProjection,
     BatchNorm,
     BertModel,
+    BiTemperedLoss,
     BregmanPCA,
-    CausalDepthwiseConv1D,
-    ClassificationMLPModel,
-    ClassificationModel,
     Conformer,
     ConvBNAct,
     DepthwiseConv1D,
     DotProductAttention,
-    DotProductAttentionWithContext,
-    DotProductAttentionXL,
     Einsum,
+    EinsumOp,
+    Embedding,
     FeedForward,
     FRnn,
     FullSoftmax,
@@ -32,9 +31,10 @@ from zero_pax.praxis.layers import (
     Identity,
     LanguageModel,
     LanguageModelDPO,
+    LayerNorm,
     LayerNormalizedLstmCellSimple,
     LightConv1D,
-    LocalSelfAttention,
+    Linear,
     LocalSelfAttentionAlibi,
     LocalSelfAttentionRelativeBias,
     LstmCellSimple,
@@ -43,7 +43,6 @@ from zero_pax.praxis.layers import (
     MLPBlock,
     PipelinedTransformer,
     Pooling,
-    Pooling1D,
     PositionalEmbedding,
     PositionalEmbedding2D,
     RandomVectorQuantizer,
@@ -52,6 +51,7 @@ from zero_pax.praxis.layers import (
     Repeat,
     ResNet,
     ResNetBlock,
+    RmsNorm,
     SelfAttentionWithNormAndResidual,
     SharedEmbeddingSoftmax,
     SigmoidCrossEntropy,
@@ -69,240 +69,424 @@ from zero_pax.praxis.layers import (
     TransformerFeedForward,
     TransformerFeedForwardMoe,
     TransformerLm,
-    VanillaNet,
     VectorQuantizer,
     VitEntryLayers,
     VitExitLayers,
     VQNgrammer,
 )
-from zero_pax.praxis.layers.attentions import _apply_rotary_position_emb
-from zero_pax.types import PaxConfig
+from zero_pax.types import DecoderHParams, PaxConfig, WeightInit
 
 
-def test_tensor_ops_and_base_branches() -> None:
-    """Cover remaining branches in `_tensor_ops.py`, `base.py`, `normalizations.py`, `linear_pooling.py`, and `convolutions.py`."""
+def test_tensor_ops_and_base_numerical_branches() -> None:
+    """Verify numerical edge cases in `_tensor_ops.py`, `base.py`, `normalizations.py`, `linear_pooling.py`, and `convolutions.py`."""
     t = t_ops.asarray([1.0, 2.0])
     assert t_ops.asarray(t) is t
-    assert t_ops.transpose([[1.0, 2.0], [3.0, 4.0]], axes=(1, 0)).shape == (2, 2)
-    assert t_ops.pad([[1.0, 2.0]], ((0, 0), (1, 1)), mode="edge").shape == (1, 4)
-    assert t_ops.argmin([3.0, 1.0, 2.0]).shape == ()
-    assert t_ops.argmax([3.0, 1.0, 2.0]).shape == ()
+    np.testing.assert_allclose(
+        t_ops.transpose([[1.0, 2.0], [3.0, 4.0]], axes=(1, 0)),
+        np.array([[1.0, 3.0], [2.0, 4.0]]),
+    )
+    np.testing.assert_allclose(
+        t_ops.pad([[1.0, 2.0]], ((0, 0), (1, 1)), mode="edge"),
+        np.array([[1.0, 1.0, 2.0, 2.0]]),
+    )
+    assert int(t_ops.argmin([3.0, 1.0, 2.0])) == 1
+    assert int(t_ops.argmax([3.0, 1.0, 2.0])) == 0
 
-    class NonCallableModel(BasePraxisLayer):
+    class CustomSubLayer(BasePraxisLayer):
         """Test subclass of BasePraxisLayer."""
 
-    cfg_base = PaxConfig(cls=NonCallableModel)
-    assert isinstance(instantiate_layer(cfg_base, Identity()), NonCallableModel)
+    cfg_base = PaxConfig(cls=CustomSubLayer)
+    assert isinstance(instantiate_layer(cfg_base, Identity()), CustomSubLayer)
+    assert DecoderHParams().seqlen == 0
 
-    class DummyObj:
-        """Non-callable test object."""
+    x_4d = np.arange(1, 33, dtype=np.float32).reshape((2, 2, 2, 4))
+    pad_2d = np.array([[0.0, 1.0], [0.0, 0.0]], dtype=np.float32)
 
-    cfg_dummy: PaxConfig[BasePraxisLayer] = PaxConfig(cls=DummyObj)  # type: ignore[arg-type]
-    assert isinstance(instantiate_layer(cfg_dummy, Identity()), Identity)
-    assert isinstance(instantiate_layer(DummyObj(), Identity()), Identity)  # type: ignore[arg-type]
+    bn = BatchNorm(dim=4, set_padded_output_to_zero=False)
+    out_bn = bn(x_4d, paddings=pad_2d)
+    assert out_bn.shape == (2, 2, 2, 4)
+    assert np.any(np.asarray(out_bn[0, 1]) != 0.0)
 
-    ein_bias = Einsum(eqn="bd,df->bf", use_bias=True)
-    assert ein_bias(np.ones((2, 3), dtype=np.float32)).shape == (2, 3)
-    ein_no_bias = Einsum(eqn="bd,df->bf", use_bias=False)
-    assert ein_no_bias(np.ones((2, 3), dtype=np.float32)).shape == (2, 3)
+    gn_no_aff = GroupNorm(
+        dim=4, num_groups=2, use_scale=False, use_bias=False, set_padded_output_to_zero=False
+    )
+    out_gn = gn_no_aff(x_4d, paddings=pad_2d)
+    assert np.any(np.asarray(out_gn[0, 1]) != 0.0)
 
-    x_4d = np.ones((2, 4, 2, 4), dtype=np.float32)
-    pad_2d = np.zeros((2, 4), dtype=np.float32)
-    bn_no_zero = BatchNorm(dim=4, set_padded_output_to_zero=False)
-    assert bn_no_zero(x_4d, paddings=pad_2d).shape == (2, 4, 2, 4)
+    with pytest.raises(ValueError, match="Expected input channel dimension"):
+        GroupNorm(dim=8)(x_4d)
 
-    gn_cum = GroupNorm(
-        num_groups=2,
-        cumulative=True,
-        set_padded_output_to_zero=False,
-        use_scale=False,
+    ln_fp32 = LayerNorm(dim=4, reductions_in_fp32=True)
+    np.testing.assert_allclose(np.mean(ln_fp32(x_4d), axis=-1), np.zeros((2, 2, 2)), atol=1e-5)
+
+    rms_inter = RmsNorm(dim=4, intermediate_dtype="float32")
+    assert rms_inter(x_4d).shape == (2, 2, 2, 4)
+
+    gn_pad_4d = GroupNorm(dim=4, num_groups=2)
+    out_gn_4d = gn_pad_4d(x_4d, paddings=np.zeros((2, 2, 2, 1), dtype=np.float32))
+    np.testing.assert_allclose(
+        np.mean(np.asarray(out_gn_4d).reshape((2, 2, 2, 2, 2)), axis=(1, 2, 4)),
+        np.zeros((2, 2)),
+        atol=1e-5,
+    )
+
+    ein_vec = Einsum(eqn="bd,d->b")
+    np.testing.assert_allclose(ein_vec(np.array([[1.0, 2.0]], dtype=np.float32)), [3.0])
+
+    ein_custom = Einsum(
+        eqn="bd,df->bf",
+        w_shape=(2, 2),
         use_bias=False,
+        einsum_op_tpl=lambda x, w: t_ops.matmul(x, w),
     )
-    assert gn_cum(x_4d, paddings=pad_2d).shape == (2, 4, 2, 4)
-    assert GroupNorm(num_groups=2)(np.ones((2, 4, 4), dtype=np.float32), paddings=pad_2d).shape == (
-        2,
-        4,
-        4,
+    np.testing.assert_allclose(
+        ein_custom(np.ones((2, 2), dtype=np.float32), t2=np.eye(2, dtype=np.float32)),
+        np.ones((2, 2)),
+    )
+    np.testing.assert_allclose(
+        ein_custom(np.ones((2, 2), dtype=np.float32), w=np.eye(2, dtype=np.float32)),
+        np.ones((2, 2)),
     )
 
-    ff_custom = FeedForward(linear_tpl=Identity(), bias_tpl=Identity())
-    assert ff_custom(np.ones((2, 4), dtype=np.float32)).shape == (2, 4)
-
-    pool_max_pad = Pooling(
-        window_shape=(2, 2), window_stride=(1, 1), pooling_type="MAX", padding="VALID"
+    lin_custom = Linear(input_dims=2, output_dims=2, einsum_tpl=lambda x, w: t_ops.matmul(x, w))
+    np.testing.assert_allclose(
+        lin_custom(np.array([[2.0, 3.0]], dtype=np.float32), w=np.eye(2, dtype=np.float32)),
+        np.array([[2.0, 3.0]]),
     )
-    res_pool = pool_max_pad(x_4d, paddings=pad_2d)
-    assert isinstance(res_pool, tuple) and res_pool[0].shape == (2, 3, 1, 4)
 
-    pool_same_strided_pad = Pooling(
-        window_shape=(3, 3), window_stride=(2, 2), pooling_type="AVG", padding="SAME"
+    ff_custom = FeedForward(input_dims=2, output_dims=2, linear_tpl=Identity(), bias_tpl=Identity())
+    np.testing.assert_allclose(
+        ff_custom(np.array([[-1.0, 2.0]], dtype=np.float32)), np.array([[0.0, 2.0]])
     )
-    res_same_strided = pool_same_strided_pad(x_4d, paddings=pad_2d)
-    assert isinstance(res_same_strided, tuple) and res_same_strided[0].shape == (2, 2, 1, 4)
 
-    pool_stride_no_pad = Pooling(
-        window_shape=(1, 1), window_stride=(2, 1), pooling_type="AVG", padding="SAME"
+    pool_avg_valid = Pooling(
+        window_shape=(2, 2), window_stride=(1, 1), pooling_type="AVG", padding="VALID"
     )
-    res_strided = pool_stride_no_pad(x_4d, paddings=pad_2d)
-    assert isinstance(res_strided, tuple) and res_strided[0].shape == (2, 2, 2, 4)
+    res_pv = pool_avg_valid(
+        np.ones((1, 3, 3, 2), dtype=np.float32) * 4.0,
+        paddings=np.array([[0.0, 0.0, 1.0]], dtype=np.float32),
+    )
+    assert isinstance(res_pv, tuple)
+    np.testing.assert_allclose(res_pv[0][:, 0, 0, :], np.array([[4.0, 4.0]]))
 
-    p1d_valid = Pooling1D(window=2, stride=1, pooling_type="MAX", padding="VALID")
-    out_p1d_valid = p1d_valid(np.ones((2, 4, 4), dtype=np.float32))
-    assert not isinstance(out_p1d_valid, tuple) and out_p1d_valid.shape == (2, 3, 4)
-
-    gp_all_pad = GlobalPooling(pooling_type="AVG", pooling_dims=[1])
+    gp_all_pad = GlobalPooling(pooling_type="AVG", pooling_dims=[1], keepdims=False)
     out_all_pad = gp_all_pad(
         np.ones((1, 3, 2), dtype=np.float32),
         compatible_paddings=np.ones((1, 3, 1), dtype=np.float32),
     )
     np.testing.assert_allclose(out_all_pad, np.zeros((1, 2)))
 
-    conv_bn_custom = ConvBNAct(
-        filter_shape=(3, 3, 4, 4), batch_norm_tpl=Identity(), activation_tpl=ReLU()
+    cba_custom = ConvBNAct(
+        filter_shape=(3, 3, 2, 2), batch_norm_tpl=Identity(), activation_tpl=Identity()
     )
-    assert conv_bn_custom(x_4d).shape == (2, 4, 2, 4)
+    np.testing.assert_allclose(
+        cba_custom(np.ones((1, 3, 3, 2), dtype=np.float32)), np.zeros((1, 3, 3, 2))
+    )
 
-    dconv_reshape = DepthwiseConv1D(filter_shape=(3, 1, 4))
-    assert dconv_reshape(
-        np.ones((2, 4, 4), dtype=np.float32), w=np.ones((3, 4), dtype=np.float32)
-    ).shape == (2, 4, 4)
+    dconv_default = DepthwiseConv1D()
+    np.testing.assert_allclose(
+        dconv_default(np.ones((1, 4, 2), dtype=np.float32)), np.zeros((1, 4, 2))
+    )
+    np.testing.assert_allclose(
+        dconv_default(np.ones((1, 4, 2), dtype=np.float32), w=np.ones((3, 2), dtype=np.float32)),
+        np.array([[[2.0, 2.0], [3.0, 3.0], [3.0, 3.0], [2.0, 2.0]]]),
+    )
 
-    cdconv_default = CausalDepthwiseConv1D(filter_shape=(1, 1, 4))
-    assert cdconv_default(np.ones((2, 4, 4), dtype=np.float32)).shape == (2, 4, 4)
+    dconv_dilated = DepthwiseConv1D(filter_shape=(2, 1, 2), rhs_dilation_rate=2)
+    np.testing.assert_allclose(
+        dconv_dilated(np.ones((1, 4, 2), dtype=np.float32), w=np.ones((2, 1, 2), dtype=np.float32)),
+        np.array([[[1.0, 1.0], [2.0, 2.0], [2.0, 2.0], [1.0, 1.0]]]),
+    )
 
     lconv_custom = LightConv1D(
-        input_dims=4,
+        input_dims=2,
+        kernel_size=3,
         ln_tpl=Identity(),
-        linear_start_tpl=lambda x, *a, **kw: np.concatenate([x, x], axis=-1),
+        linear_start_tpl=lambda x, *a, **kw: t_ops.concatenate([x, x], axis=-1),
         depthwise_conv_tpl=Identity(),
         conv_norm_layer_tpl=Identity(),
+        conv_activation_tpl=Identity(),
         linear_end_tpl=Identity(),
     )
-    assert lconv_custom(np.ones((2, 4, 4), dtype=np.float32)).shape == (2, 4, 4)
+    x_lc = np.ones((1, 4, 2), dtype=np.float32)
+    expected_lc = x_lc * (1.0 / (1.0 + np.exp(-x_lc)))
+    np.testing.assert_allclose(lconv_custom(x_lc), expected_lc, atol=1e-5)
 
 
-def test_attentions_and_embeddings_branches() -> None:
-    """Cover remaining branches in `attentions.py` and `embeddings.py`."""
-    rope_tiny = _apply_rotary_position_emb(np.ones((1, 2, 1, 1), dtype=np.float32))
-    assert rope_tiny.shape == (1, 2, 1, 1)
-    rope_odd = _apply_rotary_position_emb(np.ones((1, 2, 1, 3), dtype=np.float32))
-    assert rope_odd.shape == (1, 2, 1, 3)
+def test_attentions_and_embeddings_numerical_branches() -> None:
+    """Verify numerical edge cases in `attentions.py` and `embeddings.py`."""
+    from zero_pax.praxis.layers.attentions import _apply_rotary_position_emb
 
-    ap_out = AttentionProjection(
-        input_dim=8, num_heads=1, dim_per_head=4, is_output_projection=True, use_bias=False
+    x_1d_head = t_ops.ones((1, 2, 1, 1))
+    np.testing.assert_allclose(_apply_rotary_position_emb(x_1d_head), x_1d_head)
+    x_odd_head = t_ops.ones((1, 2, 1, 3))
+    out_odd_rope = _apply_rotary_position_emb(x_odd_head)
+    np.testing.assert_allclose(out_odd_rope[:, :, :, 2], np.ones((1, 2, 1)))
+
+    proj_out_no_bias = AttentionProjection(
+        input_dim=6, num_heads=2, dim_per_head=3, is_output_projection=True, use_bias=False
     )
-    assert ap_out(
-        np.ones((2, 3, 2, 4), dtype=np.float32), w=np.ones((8, 8), dtype=np.float32)
-    ).shape == (2, 3, 8)
-
-    ap_in = AttentionProjection(
-        input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=False
+    np.testing.assert_allclose(
+        proj_out_no_bias(np.ones((1, 2, 2, 3), dtype=np.float32)), np.zeros((1, 2, 6))
     )
-    assert ap_in(
-        np.ones((2, 3, 8), dtype=np.float32),
-        w=np.ones((8, 8), dtype=np.float32),
-        b=np.ones((8,), dtype=np.float32),
-    ).shape == (2, 3, 2, 4)
 
-    rb = RelativeBias(num_heads=2)
-    assert rb(np.array([0, 1, 2])).shape == (1, 2, 3, 3)
-    assert rb(np.array([0, 1, 2]), 3).shape == (1, 2, 3, 3)
-    assert rb(3, np.array([0, 1, 2])).shape == (1, 2, 3, 3)
+    from zero_pax.praxis.layers import DotProductAttentionWithContext, DotProductAttentionXL
 
-    dpa_no_scale = DotProductAttention(hidden_dim=8, num_heads=2, internal_enable_query_scale=False)
-    assert dpa_no_scale(
-        np.ones((2, 3, 8), dtype=np.float32),
-        atten_mask=np.zeros((2, 2, 3, 3), dtype=np.float32),
-    ).shape == (2, 3, 8)
-
-    assert DotProductAttentionXL(rel_pos_emb_dim=0)(np.ones((2, 3, 8), dtype=np.float32)).shape == (
-        2,
-        3,
-        8,
+    np.testing.assert_allclose(
+        DotProductAttentionXL(input_dim=4, num_heads=2, rel_pos_emb_dim=0)(
+            np.ones((1, 2, 4), dtype=np.float32)
+        ),
+        np.zeros((1, 2, 4)),
     )
-    assert DotProductAttentionWithContext()(np.ones((2, 3, 8), dtype=np.float32)).shape == (2, 3, 8)
-    assert DotProductAttentionWithContext(left_context=None, right_context=1)(
-        np.ones((2, 3, 8), dtype=np.float32)
-    ).shape == (2, 3, 8)
-    assert LocalSelfAttention(block_size=0)(np.ones((2, 3, 8), dtype=np.float32)).shape == (2, 3, 8)
-    assert LocalSelfAttentionRelativeBias(num_heads=2, relative_bias_tpl=RelativeBias(num_heads=2))(
-        np.ones((2, 3, 8), dtype=np.float32)
-    ).shape == (2, 3, 8)
-    assert LocalSelfAttentionAlibi(num_heads=2)(np.ones((2, 3, 8), dtype=np.float32)).shape == (
-        2,
-        3,
-        8,
+    np.testing.assert_allclose(
+        DotProductAttentionWithContext(
+            input_dim=4, num_heads=2, left_context=None, right_context=1
+        )(np.ones((1, 2, 4), dtype=np.float32)),
+        np.zeros((1, 2, 4)),
     )
+
+    proj_out_auto = AttentionProjection(
+        input_dim=0, num_heads=1, dim_per_head=0, is_output_projection=True, use_bias=True
+    )
+    x_nh = np.ones((1, 2, 2, 3), dtype=np.float32)
+    np.testing.assert_allclose(proj_out_auto(x_nh), np.zeros((1, 2, 6)))
+    np.testing.assert_allclose(
+        proj_out_auto(
+            x_nh,
+            w=np.ones((6, 6), dtype=np.float32),
+            b=np.ones((6,), dtype=np.float32),
+        ),
+        np.full((1, 2, 6), 7.0),
+    )
+
+    proj_in_auto = AttentionProjection(
+        input_dim=0, num_heads=2, dim_per_head=0, is_output_projection=False, use_bias=True
+    )
+    x_d = np.ones((1, 2, 4), dtype=np.float32)
+    np.testing.assert_allclose(proj_in_auto(x_d), np.zeros((1, 2, 2, 2)))
+    np.testing.assert_allclose(
+        proj_in_auto(
+            x_d,
+            w=np.ones((4, 4), dtype=np.float32),
+            b=np.ones((4,), dtype=np.float32),
+        ),
+        np.full((1, 2, 2, 2), 5.0),
+    )
+
+    rb = RelativeBias(num_heads=2, rb_stddev=0.05)
+    out_rb_1d = rb(np.array([0, 1], dtype=np.int32), 2)
+    np.testing.assert_allclose(out_rb_1d[:, :, 0, 0], out_rb_1d[:, :, 1, 1], atol=1e-5)
+    out_rb_none = rb(2, None)
+    assert out_rb_none.shape == (1, 2, 2, 2)
+
+    dpa_hidden = DotProductAttention(
+        input_dim=4,
+        hidden_dim=4,
+        num_heads=2,
+        internal_enable_query_scale=False,
+        ln_tpl=Identity(),
+        ngrammer_tpl=Identity(),
+    )
+    np.testing.assert_allclose(
+        dpa_hidden(
+            x_d,
+            atten_mask=np.zeros((1, 2, 2, 2), dtype=np.float32),
+        ),
+        np.zeros((1, 2, 4)),
+    )
+
+    dpa_custom_proj = DotProductAttention(
+        input_dim=4,
+        num_heads=2,
+        proj_tpl=lambda x, *a, **kw: t_ops.reshape(x, (1, 2, 2, 2)),
+        qk_einsum_tpl=lambda q, k: t_ops.einsum("btnh,bsnh->bnts", q, k),
+        pv_einsum_tpl=lambda p, v: t_ops.einsum("bnts,bsnh->btnh", p, v),
+        per_dim_scale_tpl=Identity(),
+        relative_bias_tpl=lambda q_len, *a, **kw: t_ops.zeros((1, 2, 2, 2)),
+    )
+    assert dpa_custom_proj(x_d).shape == (1, 2, 4)
+
+    lsa_rb_custom = LocalSelfAttentionRelativeBias(
+        input_dim=4, num_heads=2, relative_bias_tpl=RelativeBias(num_heads=2)
+    )
+    np.testing.assert_allclose(lsa_rb_custom(x_d), np.zeros((1, 2, 4)))
+    lsa_alibi_no_ctx = LocalSelfAttentionAlibi(input_dim=4, num_heads=2)
+    np.testing.assert_allclose(lsa_alibi_no_ctx(x_d), np.zeros((1, 2, 4)))
 
     gqa_no_bias = GroupedQueryAttention(
-        input_dim=8, num_heads=2, num_kv_heads=2, dim_per_head=4, use_bias=False
+        input_dim=4, num_heads=2, num_kv_heads=2, use_bias=False, atten_temp=0.0
     )
-    assert gqa_no_bias(np.ones((2, 3, 8), dtype=np.float32)).shape == (2, 3, 8)
+    np.testing.assert_allclose(gqa_no_bias(x_d), np.zeros((1, 2, 4)))
 
     sanr = SelfAttentionWithNormAndResidual(
-        num_heads=2,
-        dim_per_head=4,
-        self_atten_tpl=DotProductAttention(input_dim=8, num_heads=2, dim_per_head=4),
+        num_heads=2, dim_per_head=2, self_atten_tpl=ReLU(), force_no_residual=False
     )
-    assert sanr(np.ones((2, 3, 8), dtype=np.float32)).shape == (2, 3, 8)
+    np.testing.assert_allclose(sanr(x_d), x_d)
 
-    shared = SharedEmbeddingSoftmax(num_classes=5, input_dims=4)
-    assert shared.emb_lookup(
-        np.array([[0, 1]], dtype=np.int32), w=np.ones((5, 4), dtype=np.float32)
-    ).shape == (1, 2, 4)
+    with pytest.raises(ValueError, match="INDEX or MATMUL"):
+        Embedding(lookup_style="INVALID")([[0, 1]])
 
-    gshard = GShardSharedEmbeddingSoftmax(
-        num_classes=5, input_dims=4, logits_abs_max=0.0, soft_cap_logits=0.0
+    emb_custom_lookup = Embedding(
+        num_classes=4,
+        input_dims=2,
+        lookup_style="INDEX",
+        array_lookup_tpl=EinsumOp(equation="...v,vd->...d"),
     )
-    assert gshard.emb_lookup(
-        np.array([[0, 1]], dtype=np.int32), w=np.ones((4, 5), dtype=np.float32)
-    ).shape == (1, 2, 4)
-    assert gshard(np.ones((1, 2, 4), dtype=np.float32)).shape == (1, 2, 5)
+    np.testing.assert_allclose(
+        emb_custom_lookup([[0, 1]], w=np.ones((4, 2), dtype=np.float32)),
+        np.ones((1, 2, 2)),
+    )
+    emb_custom_fn = Embedding(
+        num_classes=4,
+        input_dims=2,
+        lookup_style="INDEX",
+        array_lookup_tpl=lambda ids: t_ops.ones((1, 2, 2)),
+    )
+    np.testing.assert_allclose(emb_custom_fn([[0, 1]]), np.ones((1, 2, 2)))
+    emb_custom_ein = Embedding(
+        num_classes=4,
+        input_dims=2,
+        lookup_style="MATMUL",
+        einsum_tpl=lambda oh, w: t_ops.einsum("...v,vd->...d", oh, w),
+    )
+    np.testing.assert_allclose(
+        emb_custom_ein([[0, 1]], w=np.ones((4, 2), dtype=np.float32)),
+        np.ones((1, 2, 2)),
+    )
 
-    pe = PositionalEmbedding(embedding_dims=4)
-    assert pe(seq_length=np.array(3)).shape == (1, 3, 4)
-    assert pe(seq_length=np.zeros((3,))).shape == (1, 3, 4)
-    assert pe(position=np.array([0, 1, 2])).shape == (1, 3, 4)
+    shared = SharedEmbeddingSoftmax(
+        num_classes=4,
+        input_dims=4,
+        use_bias=False,
+        soft_cap_logits=0.0,
+        ais_temperature=2.0,
+        feed_forward_tpl=Identity(),
+    )
+    np.testing.assert_allclose(
+        shared(np.ones((1, 2, 4), dtype=np.float32)),
+        np.full((1, 2, 4), 0.5),
+    )
 
-    assert PositionalEmbedding2D(h=2, w=2, embedding_dims=2)().shape == (1, 4, 2)
-    assert TrainablePositionalEmbedding(max_seq_length=4, embedding_dims=4)(
-        position=np.array([[0, 1]])
-    ).shape == (1, 2, 4)
+    gshard_loss = GShardSharedEmbeddingSoftmax(
+        num_classes=3, input_dims=2, label_smoothing_prob=0.1, z_loss_weight=0.01
+    )
+    loss_gs = gshard_loss(
+        np.ones((1, 2, 2), dtype=np.float32),
+        w=np.ones((2, 3), dtype=np.float32),
+        class_ids=np.array([[0, 1]], dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        loss_gs,
+        np.full((1, 2), np.log(3.0) + 0.01 * ((2.0 + np.log(3.0)) ** 2)),
+        atol=1e-4,
+    )
+
+    assert PositionalEmbedding(embedding_dims=4)(seq_length=t_ops.asarray(3)).shape == (1, 3, 4)
+    assert PositionalEmbedding(embedding_dims=4)(seq_length=t_ops.zeros((3,))).shape == (1, 3, 4)
+    assert PositionalEmbedding(embedding_dims=4)(position=t_ops.arange(3)).shape == (1, 3, 4)
+
+    shared_no_ff = SharedEmbeddingSoftmax(num_classes=4, input_dims=2, use_bias=False)
+    np.testing.assert_allclose(
+        shared_no_ff.emb_lookup(
+            np.array([[0, 1]], dtype=np.int32), w=np.ones((4, 2), dtype=np.float32)
+        ),
+        np.ones((1, 2, 2)),
+    )
+    np.testing.assert_allclose(
+        shared_no_ff(np.ones((1, 2, 2), dtype=np.float32)), np.zeros((1, 2, 4))
+    )
+
+    pe2d_trunc = PositionalEmbedding2D(h=2, w=2, embedding_dims=3)()
+    assert pe2d_trunc.shape == (1, 4, 3)
+
+    pe2d_pad = PositionalEmbedding2D(h=2, w=2, embedding_dims=5)()
+    assert pe2d_pad.shape == (1, 4, 5)
+    np.testing.assert_allclose(pe2d_pad[:, :, 4:], 0.0)
+    pe2d_pos = PositionalEmbedding2D(h=2, w=2, embedding_dims=4)(position=np.array([0, 2]))
+    np.testing.assert_allclose(
+        pe2d_pos[0, 0], PositionalEmbedding2D(h=2, w=2, embedding_dims=4)()[0, 0]
+    )
+    assert PositionalEmbedding2D(h=2, w=2, embedding_dims=4)(seq_length=2).shape == (1, 2, 4)
+    assert PositionalEmbedding2D(h=2, w=2, embedding_dims=4)(seq_length=6).shape == (1, 6, 4)
+
+    tpe_default = TrainablePositionalEmbedding(max_seq_length=4, embedding_dims=2)
+    np.testing.assert_allclose(tpe_default(), np.zeros((1, 4, 2)))
+    tpe_custom_ein = TrainablePositionalEmbedding(
+        max_seq_length=4,
+        embedding_dims=2,
+        einsum_tpl=lambda oh, w: t_ops.einsum("btv,vd->btd", oh, w),
+    )
+    np.testing.assert_allclose(tpe_custom_ein(seq_length=2), np.zeros((1, 2, 2)))
+
+    sm = FullSoftmax(
+        input_dims=2,
+        num_classes=3,
+        use_bias=False,
+        scale_before_logits=2.0,
+        ais_temperature=2.0,
+        bi_tempered_loss_tpl=BiTemperedLoss(t1=1.0, t2=1.0),
+    )
+    probs_2d = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    loss_probs = sm(
+        np.zeros((2, 2), dtype=np.float32),
+        class_probabilities=probs_2d,
+        class_weights=np.array([1.0, 1.0], dtype=np.float32),
+    )
+    np.testing.assert_allclose(loss_probs, np.full((2,), np.log(3.0)), atol=1e-5)
 
     sm_ff = FullSoftmax(
-        input_dims=4,
+        input_dims=2, num_classes=3, feed_forward_tpl=Linear(input_dims=2, output_dims=3)
+    )
+    np.testing.assert_allclose(sm_ff(np.ones((2, 2), dtype=np.float32)), np.full((2, 3), 1.0 / 3.0))
+
+    sce_proj = SigmoidCrossEntropy(input_dims=2, num_classes=3, soft_cap_logits=0.0)
+    out_sce_proj = sce_proj(
+        np.ones((2, 2), dtype=np.float32),
+        w=np.zeros((2, 3), dtype=np.float32),
+        b=np.zeros((3,), dtype=np.float32),
+    )
+    np.testing.assert_allclose(out_sce_proj, np.full((2, 3), 0.5), atol=1e-5)
+
+    sce_no_b = SigmoidCrossEntropy(input_dims=2, num_classes=3, soft_cap_logits=0.0)
+    np.testing.assert_allclose(
+        sce_no_b(np.ones((2, 2), dtype=np.float32), w=np.zeros((2, 3), dtype=np.float32)),
+        np.full((2, 3), 0.5),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        sce_no_b(
+            np.zeros((2, 3), dtype=np.float32),
+            labels=np.ones((2, 3), dtype=np.float32),
+            class_weights=np.full((2, 3), 2.0, dtype=np.float32),
+        ),
+        np.full((2, 3), 2.0 * np.log(2.0)),
+        atol=1e-5,
+    )
+
+    sce_ff = SigmoidCrossEntropy(
+        input_dims=2,
         num_classes=3,
-        scale_before_logits=0.5,
-        feed_forward_tpl=FeedForward(input_dims=4, output_dims=3),
+        feed_forward_tpl=Linear(input_dims=2, output_dims=3),
+        bias_init=WeightInit(method="zeros"),
     )
-    assert sm_ff(
-        np.ones((2, 4), dtype=np.float32),
-        class_probabilities=np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-        class_weights=np.ones((2,), dtype=np.float32),
-    ).shape == (2,)
-
-    sm_proj_b = FullSoftmax(input_dims=4, num_classes=3, use_bias=True)
-    assert sm_proj_b(
-        np.ones((2, 4), dtype=np.float32),
-        class_ids=np.array([0, 1], dtype=np.int32),
-        b=np.ones((3,), dtype=np.float32),
-    ).shape == (2,)
-
-    sce_proj = SigmoidCrossEntropy(input_dims=4, num_classes=3, soft_cap_logits=0.0)
-    assert sce_proj(np.ones((2, 4), dtype=np.float32)).shape == (2, 3)
-    assert sce_proj(
-        np.ones((2, 4), dtype=np.float32),
-        labels=np.zeros((2, 3), dtype=np.float32),
-    ).shape == (2, 3)
-
-
-def test_utilities_recurrent_transformers_and_arch_branches() -> None:
-    """Cover remaining branches in `quantization_utils.py`, `recurrent_ssm.py`, `transformers.py`, and `architectures.py`."""
-    assert VectorQuantizer(num_latent_classes=1)(np.ones((1, 2, 2), dtype=np.float32))[0].shape == (
-        1,
-        2,
-        2,
+    np.testing.assert_allclose(
+        sce_ff(np.ones((2, 2), dtype=np.float32)), np.full((2, 3), 0.5), atol=1e-5
     )
+    np.testing.assert_allclose(
+        SigmoidCrossEntropy()(
+            np.zeros((2, 3), dtype=np.float32),
+            labels=np.ones((2, 3), dtype=np.float32),
+        ),
+        np.full((2, 3), np.log(2.0)),
+        atol=1e-5,
+    )
+
+
+def test_utilities_recurrent_transformers_and_arch_numerical_branches() -> None:
+    """Verify numerical edge cases in `quantization_utils.py`, `recurrent_ssm.py`, `transformers.py`, and `architectures.py`."""
+    q_vq, c_vq, _ = VectorQuantizer(num_latent_classes=1)(np.ones((1, 2, 2), dtype=np.float32))
+    np.testing.assert_allclose(q_vq, np.ones((1, 2, 2)))
+    np.testing.assert_allclose(c_vq, np.zeros((1, 2)))
 
     rvq = RandomVectorQuantizer(
         stack_ratio=1,
@@ -310,112 +494,212 @@ def test_utilities_recurrent_transformers_and_arch_branches() -> None:
         projection_dim=4,
         num_latent_classes=2,
     )
-    q_rvq, _, _ = rvq(
+    q_rvq, c_rvq, _ = rvq(
         np.ones((1, 4, 2), dtype=np.float32),
         proj_w=np.ones((4, 4), dtype=np.float32),
         codebook=np.ones((2, 4), dtype=np.float32),
     )
-    assert q_rvq.shape == (1, 2, 4)
+    assert q_rvq.shape == (1, 2, 4) and c_rvq.shape == (1, 2)
+    np.testing.assert_allclose(np.sum(np.square(q_rvq), axis=-1), np.ones((1, 2)), atol=1e-5)
 
     vq_ng = VQNgrammer(num_clusters=1)
-    assert vq_ng(np.ones((1, 3, 4), dtype=np.float32)).shape == (1, 3, 4)
+    x_134 = np.arange(1, 13, dtype=np.float32).reshape((1, 3, 4))
+    np.testing.assert_allclose(vq_ng(x_134), x_134)
 
     pca_norm = BregmanPCA(num_components=2, input_dims=4, normalize_weight=False)
-    assert pca_norm(
-        np.ones((1, 4), dtype=np.float32), components=np.ones((2, 4), dtype=np.float32)
-    )[0].shape == (1, 4)
+    recon_pca, _ = pca_norm(
+        np.ones((1, 4), dtype=np.float32), components=np.eye(4, dtype=np.float32)[:2]
+    )
+    np.testing.assert_allclose(recon_pca, np.array([[1.0, 1.0, 0.0, 0.0]]))
 
     sr_no_mask = StochasticResidual(residual_weight=0.5, survival_prob=0.5)
-    assert sr_no_mask(
-        np.ones((1, 2), dtype=np.float32), residual=np.ones((1, 2), dtype=np.float32)
-    ).shape == (1, 2)
+    np.testing.assert_allclose(
+        sr_no_mask(
+            np.ones((1, 2), dtype=np.float32), residual=np.ones((1, 2), dtype=np.float32) * 2.0
+        ),
+        np.full((1, 2), 2.0),
+    )
 
     ts_neg = TemporalShifting(shift=1, axis=-1)
-    assert ts_neg(np.ones((2, 3), dtype=np.float32)).shape == (2, 3)
+    np.testing.assert_allclose(
+        ts_neg(np.array([[1.0, 2.0, 3.0]], dtype=np.float32)),
+        np.array([[0.0, 1.0, 2.0]]),
+    )
+    np.testing.assert_allclose(
+        TemporalShifting(shift=1)([1.0, 2.0]),
+        np.array([1.0, 2.0]),
+    )
 
     st_strided_pad = StackingOverTime(left_context=0, right_context=0, stride=2)
     res_st_sp = st_strided_pad(
-        np.ones((1, 4, 2), dtype=np.float32),
+        np.arange(1, 9, dtype=np.float32).reshape((1, 4, 2)),
         paddings=np.zeros((1, 4), dtype=np.float32),
     )
-    assert isinstance(res_st_sp, tuple) and res_st_sp[0].shape == (1, 2, 2)
+    assert isinstance(res_st_sp, tuple)
+    np.testing.assert_allclose(res_st_sp[0], np.array([[[1.0, 2.0], [5.0, 6.0]]]))
 
     mlm_no_pad = MaskedLmDataAugmenter(vocab_size=10, mask_token_id=9)
-    assert mlm_no_pad(
-        np.ones((1, 3), dtype=np.float32),
+    aug_m, w_m = mlm_no_pad(
+        np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
         mask_positions=np.array([[1.0, 0.0, 1.0]], dtype=np.float32),
-    )[0].shape == (1, 3)
+    )
+    np.testing.assert_allclose(aug_m, np.array([[9.0, 2.0, 9.0]]))
+    np.testing.assert_allclose(w_m, np.array([[1.0, 0.0, 1.0]]))
 
     spec_4d = SpectrumAugmenter(freq_mask_max_bins=0, time_mask_max_frames=0, augment_at_eval=True)
-    assert spec_4d(np.ones((1, 4, 4, 2), dtype=np.float32)).shape == (1, 4, 4, 2)
-    assert spec_4d(np.ones((4,), dtype=np.float32)).shape == (4,)
+    x_spec4 = np.ones((1, 4, 4, 2), dtype=np.float32)
+    np.testing.assert_allclose(spec_4d(x_spec4), x_spec4)
+    np.testing.assert_allclose(spec_4d(np.ones((4,), dtype=np.float32)), np.ones((4,)))
     spec_small = SpectrumAugmenter(
         freq_mask_max_bins=10, time_mask_max_frames=10, augment_at_eval=True
     )
-    assert spec_small(np.ones((1, 1, 1), dtype=np.float32)).shape == (1, 1, 1)
+    np.testing.assert_allclose(spec_small(np.ones((1, 1, 1), dtype=np.float32)), np.ones((1, 1, 1)))
 
     rep_sub = Repeat(sub_layer=ReLU(), x_times=0, num_repeats=1)
-    assert rep_sub(np.ones((1, 2), dtype=np.float32)).shape == (1, 2)
+    np.testing.assert_allclose(
+        rep_sub(np.array([[-1.0, 2.0]], dtype=np.float32)), np.array([[0.0, 2.0]])
+    )
 
     lstm_tuple_inferred = LstmCellSimple(num_output_nodes=0, hidden_size=0)
-    assert lstm_tuple_inferred(
+    c_inf, m_inf = lstm_tuple_inferred(
         np.ones((2, 3), dtype=np.float32),
         state0=(np.zeros((2, 3), dtype=np.float32), np.zeros((2, 3), dtype=np.float32)),
-    )[0].shape == (2, 3)
+    )
+    np.testing.assert_allclose(c_inf, np.zeros((2, 3)))
+    np.testing.assert_allclose(m_inf, np.zeros((2, 3)))
 
     lstm_no_bias = LstmCellSimple(enable_lstm_bias=False, cell_value_cap=None)
-    assert lstm_no_bias(
+    c_nb, _ = lstm_no_bias(
         np.ones((2, 4), dtype=np.float32),
         state0=np.ones((2, 4), dtype=np.float32),
         padding=np.array([0.0, 1.0], dtype=np.float32),
-    )[0].shape == (2, 4)
+    )
+    np.testing.assert_allclose(c_nb[0], np.full((4,), 0.5))
+    np.testing.assert_allclose(c_nb[1], np.ones((4,)))
 
     lstm_same_size = LstmCellSimple(hidden_size=2)
-    assert lstm_same_size(
+    c_ss, _ = lstm_same_size(
         np.ones((2, 2), dtype=np.float32),
         state0=np.ones((2, 2), dtype=np.float32),
-    )[0].shape == (2, 2)
+    )
+    np.testing.assert_allclose(c_ss, np.full((2, 2), 0.5))
 
     ln_lstm_no_bias = LayerNormalizedLstmCellSimple(enable_lstm_bias=False)
-    assert ln_lstm_no_bias(np.ones((2, 12), dtype=np.float32))[0].shape == (2, 4)
+    c_ln_nb, _ = ln_lstm_no_bias(np.ones((2, 12), dtype=np.float32))
+    np.testing.assert_allclose(c_ln_nb, np.zeros((2, 4)))
 
-    assert FRnn()(np.ones((2, 4), dtype=np.float32)).shape == (2, 4)
-    assert FRnn(cell_tpl=LstmCellSimple(num_input_nodes=3, num_output_nodes=3), reverse=False)(
-        np.ones((2, 3, 3), dtype=np.float32)
-    ).shape == (2, 3, 3)
-    assert LstmFrnn()(np.ones((2, 4), dtype=np.float32)).shape == (2, 4)
-    assert StackFrnn(frnn_tpl=ReLU())(np.ones((2, 3, 3), dtype=np.float32)).shape == (2, 3, 3)
-    assert SSM()(np.ones((2, 4), dtype=np.float32)).shape == (2, 4)
-    ssm_custom = SSM(hidden_size=3)
-    assert ssm_custom(
+    np.testing.assert_allclose(
+        FRnn()(np.ones((2, 4), dtype=np.float32)), np.tanh(np.ones((2, 4))), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        FRnn()(np.ones((4,), dtype=np.float32)), np.tanh(np.ones((4,))), atol=1e-5
+    )
+    out_frnn_lstm = FRnn(
+        cell_tpl=LstmCellSimple(num_input_nodes=3, num_output_nodes=3), reverse=False
+    )(np.ones((2, 3, 3), dtype=np.float32))
+    np.testing.assert_allclose(out_frnn_lstm, np.zeros((2, 3, 3)))
+
+    np.testing.assert_allclose(
+        LstmFrnn()(np.ones((2, 4), dtype=np.float32)), np.zeros((2, 4)), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        StackFrnn(frnn_tpl=ReLU())(np.array([[[-1.0, 2.0]]], dtype=np.float32)),
+        np.array([[[0.0, 2.0]]]),
+    )
+    np.testing.assert_allclose(SSM()(np.ones((2, 4), dtype=np.float32)), np.ones((2, 4)), atol=1e-5)
+    ssm_bi = SSM(hidden_size=3, bidirectional=True)
+    out_ssm_bi = ssm_bi(
+        np.ones((2, 3, 3), dtype=np.float32),
+        paddings=np.zeros((2, 3), dtype=np.float32),
+        a_diag=np.array([-1.0]),
+        b_mat=np.ones((3, 1)),
+        c_mat=np.ones((1, 3)),
+        d_vec=np.eye(3),
+    )
+    assert out_ssm_bi.shape == (2, 3, 3) and np.all(np.asarray(out_ssm_bi) > 1.0)
+
+    out_ssm_bi_nopad = ssm_bi(
         np.ones((2, 3, 3), dtype=np.float32),
         a_diag=np.array([-1.0]),
         b_mat=np.ones((3, 1)),
+        c_mat=np.ones((1, 3)),
         d_vec=np.eye(3),
-    ).shape == (2, 3, 3)
-    assert SSMGated(hidden_size=2, ssm_tpl=Identity(), gss_fflayer_tpl=Identity())(
-        np.ones((2, 3, 4), dtype=np.float32)
-    ).shape == (2, 3, 4)
-    assert SSMTransformer()(np.ones((2, 3, 3), dtype=np.float32)).shape == (2, 3, 3)
+    )
+    np.testing.assert_allclose(out_ssm_bi_nopad, out_ssm_bi, atol=1e-5)
 
-    x_tr = np.ones((2, 3, 4), dtype=np.float32)
-    ffn_custom_ln = TransformerFeedForward(input_dims=4, norm_policy="post", ln_tpl=Identity())
-    assert ffn_custom_ln(x_tr).shape == (2, 3, 4)
+    rnet_no_stem = ResNet(strides=(1,), channels=(1,), blocks=(1,), kernels=(3,))
+    np.testing.assert_allclose(
+        rnet_no_stem(np.ones((1, 4, 4, 4), dtype=np.float32)),
+        np.ones((1, 2, 2, 4)),
+        atol=1e-5,
+    )
 
-    moe_pre = TransformerFeedForwardMoe(
+    vit_entry_mismatch_pe = VitEntryLayers(
+        pos_emb_shapes=(1, 3),
+        output_dims=4,
+        pos_emb_tpl=lambda x, *a, **kw: t_ops.zeros((1, 1, 1)),
+    )
+    np.testing.assert_allclose(
+        vit_entry_mismatch_pe(np.ones((1, 3, 4), dtype=np.float32)),
+        np.ones((1, 3, 4)),
+    )
+
+    out_ssmg = SSMGated(
+        hidden_size=2,
+        ssm_tpl=Identity(),
+        gss_fflayer_tpl=Linear(input_dims=4, output_dims=2, weight_init=WeightInit(method="ones")),
+    )(np.ones((2, 3, 4), dtype=np.float32))
+    np.testing.assert_allclose(out_ssmg, np.zeros((2, 3, 2)))
+    np.testing.assert_allclose(
+        SSMTransformer()(np.ones((2, 3, 3), dtype=np.float32)), np.zeros((2, 3, 3))
+    )
+
+    x_tr = np.arange(1, 25, dtype=np.float32).reshape((2, 3, 4)) * 0.1
+    ffn_custom_ln = TransformerFeedForward(
+        input_dims=4,
+        norm_policy="post",
+        ln_tpl=Identity(),
+        fflayer_tpl=Identity(),
+    )
+    np.testing.assert_allclose(ffn_custom_ln(x_tr), x_tr * 2.0, atol=1e-5)
+
+    ffn_gated_custom = TransformerFeedForward(
+        input_dims=4,
+        use_gated_activation=True,
+        ffn0_tpl=Identity(),
+        ffn1_tpl=Identity(),
+        ffn2_tpl=Identity(),
+        ln_tpl=Identity(),
+    )
+    np.testing.assert_allclose(ffn_gated_custom(x_tr), x_tr + np.square(x_tr), atol=1e-5)
+
+    moe_top2 = TransformerFeedForwardMoe(
         input_dims=4,
         hidden_dims=4,
-        num_experts=1,
+        num_experts=3,
         gating_func="top2",
         norm_policy="pre",
         add_skip_connection=False,
+        use_gated_activation=True,
     )
-    assert moe_pre(
+    out_moe_top2 = moe_top2(
         x_tr,
-        gate_w=np.ones((4, 1), dtype=np.float32),
-        w1=np.ones((1, 4, 4), dtype=np.float32),
-        w2=np.ones((1, 4, 4), dtype=np.float32),
-    ).shape == (2, 3, 4)
+        gate_w=np.ones((4, 3), dtype=np.float32),
+        wi_0=np.ones((3, 4, 4), dtype=np.float32),
+        wo_0=np.ones((3, 4, 4), dtype=np.float32),
+    )
+    assert out_moe_top2.shape == (2, 3, 4)
+
+    moe_2d_w = TransformerFeedForwardMoe(input_dims=4, hidden_dims=4)
+    np.testing.assert_allclose(
+        moe_2d_w(
+            x_tr,
+            w1=np.zeros((4, 4), dtype=np.float32),
+            w2=np.zeros((4, 4), dtype=np.float32),
+        ),
+        x_tr,
+        atol=1e-5,
+    )
 
     tr_custom = Transformer(
         model_dims=4,
@@ -424,43 +708,51 @@ def test_utilities_recurrent_transformers_and_arch_branches() -> None:
         tr_atten_tpl=Identity(),
         cross_atten_tpl=Identity(),
         tr_fflayer_tpl=Identity(),
+        ln_tpl=Identity(),
     )
-    assert tr_custom(x_tr, cross_inputs=x_tr).shape == (2, 3, 4)
+    np.testing.assert_allclose(tr_custom(x_tr, cross_inputs=x_tr), x_tr * 4.0, atol=1e-5)
 
     st_rep = StackedTransformerRepeated(sub_tpl=Identity(), x_times=1)
-    assert st_rep(x_tr).shape == (2, 3, 4)
-    assert PipelinedTransformer(pipeline_stage=Identity())(x_tr).shape == (2, 3, 4)
+    np.testing.assert_allclose(st_rep(x_tr), x_tr)
+    np.testing.assert_allclose(PipelinedTransformer(pipeline_stage=Identity())(x_tr), x_tr)
 
-    lm_custom = TransformerLm(
+    lm_prefix = TransformerLm(
         model_dims=4,
         vocab_size=4,
+        model_type="prefix",
         position_emb_tpl=Identity(),
         stacked_transformer_tpl=Identity(),
         softmax_tpl=Identity(),
+        final_ln_tpl=Identity(),
     )
-    assert lm_custom(np.array([[0, 1, 2]], dtype=np.int32)).shape == (1, 3, 4)
+    np.testing.assert_allclose(
+        lm_prefix(np.array([[0, 1, 2, 3]], dtype=np.int32)), np.zeros((1, 4, 4))
+    )
 
     enc_dec_custom = TransformerEncoderDecoder(
         model_dims=4,
+        encoder_embedding_tpl=Identity(),
+        decoder_embedding_tpl=Identity(),
+        encoder_ngrammer_tpl=Identity(),
+        decoder_ngrammer_tpl=Identity(),
         position_emb_tpl=Identity(),
         encoder_stacked_transformer_tpl=Identity(),
         decoder_stacked_transformer_tpl=Identity(),
+        encoder_ln_tpl=Identity(),
+        decoder_ln_tpl=Identity(),
     )
-    assert enc_dec_custom(x_tr).shape == (2, 3, 4)
+    np.testing.assert_allclose(enc_dec_custom(x_tr), x_tr * 2.0, atol=1e-5)
 
     dpo_plain = LanguageModelDPO(mdl=Identity(), use_ref_model=False, label_smoothing=0.0)
-    assert dpo_plain(x_tr, rejected_inputs=x_tr * 0.5).shape == (2, 3)
+    loss_dpo = dpo_plain(x_tr, rejected_inputs=x_tr * 0.5)
+    assert loss_dpo.shape == (2, 3) and np.all(np.asarray(loss_dpo) > 0.0)
 
-    assert BertModel(lm_tpl=TransformerLm(model_dims=4))(x_tr).shape == (2, 3, 4)
-    assert LanguageModel(lm_tpl=TransformerLm(model_dims=4))(x_tr).shape == (2, 3, 4)
-
-    vnet_no_stem = VanillaNet(strides=(1,), channels=(4,), blocks=(2,), kernels=(3,))
-    assert vnet_no_stem(np.ones((1, 4, 4, 4), dtype=np.float32)).shape == (1, 4, 4, 4)
-
-    rnet_no_stem = ResNet(
-        strides=(1,), channels=(1,), blocks=(2,), kernels=(3,), entry_max_pool=False
+    bert_aug = BertModel(
+        lm_tpl=Identity(),
+        mlm_augmenter_tpl=MaskedLmDataAugmenter(vocab_size=10, mask_token_id=9),
     )
-    assert rnet_no_stem(np.ones((1, 4, 4, 4), dtype=np.float32)).shape == (1, 4, 4, 4)
+    np.testing.assert_allclose(bert_aug(x_tr), x_tr)
+    np.testing.assert_allclose(LanguageModel(lm_tpl=Identity())(x_tr), x_tr)
 
     rnet_small_pool = ResNet(
         strides=(1,),
@@ -468,21 +760,25 @@ def test_utilities_recurrent_transformers_and_arch_branches() -> None:
         blocks=(1,),
         kernels=(3,),
         entry_max_pool=True,
-        entryflow_conv_params=lambda x, *a, **kw: x,
+        entryflow_conv_params=Identity(),
     )
-    assert rnet_small_pool(np.ones((1, 2, 2, 4), dtype=np.float32)).shape == (1, 2, 2, 4)
+    x_img_2x2 = np.ones((1, 2, 2, 4), dtype=np.float32)
+    np.testing.assert_allclose(rnet_small_pool(x_img_2x2), x_img_2x2, atol=1e-5)
 
     assert ResNetBlock(input_dim=4, output_dim=0, stride=2)(
         np.ones((1, 4, 4, 4), dtype=np.float32)
     ).shape == (1, 2, 2, 4)
-    assert Conformer(
+
+    conf_custom = Conformer(
         input_dims=4,
         layer_order="mhsa_before_conv",
         fflayer_start_tpl=Identity(),
         trans_atten_tpl=Identity(),
         lconv_tpl=Identity(),
         fflayer_end_tpl=Identity(),
-    )(x_tr).shape == (2, 3, 4)
+        final_ln_tpl=Identity(),
+    )
+    assert conf_custom(x_tr).shape == (2, 3, 4)
     assert Conformer(
         input_dims=4,
         layer_order="conv_before_mhsa",
@@ -499,29 +795,30 @@ def test_utilities_recurrent_transformers_and_arch_branches() -> None:
         3,
         4,
     )
-    assert Conformer(input_dims=4, layer_order="none")(x_tr).shape == (2, 3, 4)
 
-    assert VitEntryLayers(
-        patch_size=2,
-        output_dims=4,
-        pos_emb_tpl=PositionalEmbedding2D(h=5, w=5, embedding_dims=4),
-    )(np.ones((1, 4, 4, 1), dtype=np.float32), w_patch=np.ones((4, 4), dtype=np.float32)).shape == (
-        1,
-        4,
-        4,
+    vit_entry_proj = VitEntryLayers(pos_emb_shapes=(1, 3), output_dims=2, pos_emb_tpl=Identity())
+    np.testing.assert_allclose(
+        vit_entry_proj(np.ones((1, 3, 4), dtype=np.float32)),
+        np.full((1, 3, 2), 8.0),
+    )
+    vit_exit_custom = VitExitLayers(
+        hidden_dim=4,
+        output_dim=2,
+        pooled=True,
+        ln_tpl=Identity(),
+        pooling_tpl=GlobalPooling(pooling_type="AVG", pooling_dims=[1]),
+    )
+    np.testing.assert_allclose(
+        vit_exit_custom(
+            np.ones((1, 3, 4), dtype=np.float32), w_out=np.ones((4, 2), dtype=np.float32)
+        ),
+        np.full((1, 2), 4.0),
     )
 
-    assert VitExitLayers(
-        hidden_dim=4, output_dim=4, pre_ln=False, output_fc_tanh=True, pooled=False
-    )(x_tr).shape == (2, 3, 4)
-    assert VitExitLayers(hidden_dim=4, output_dim=2, pooled=True)(
-        x_tr, w_out=np.ones((4, 2), dtype=np.float32)
-    ).shape == (2, 2)
-
-    assert ClassificationModel(softmax_tpl=FullSoftmax(num_classes=4))(
-        np.ones((2, 4), dtype=np.float32)
-    ).shape == (2, 4)
-    assert ClassificationMLPModel(
-        mlp_tpl=MLPBlock(num_layers=1, hidden_dims=4),
-        softmax_tpl=FullSoftmax(num_classes=4),
-    )(np.ones((2, 4), dtype=np.float32)).shape == (2, 4)
+    mlp_custom = MLPBlock(
+        num_layers=1,
+        hidden_dims=4,
+        has_bias=False,
+        fflayer_tpl=Linear(input_dims=4, output_dims=4, weight_init=WeightInit(method="ones")),
+    )
+    np.testing.assert_allclose(mlp_custom(np.ones((1, 4), dtype=np.float32)), np.full((1, 4), 4.0))

@@ -135,9 +135,11 @@ def test_dot_product_attention_variants() -> None:
     )
     assert not np.allclose(out_xl, out_no_xl)
 
-    assert DotProductAttentionWithContextXL(
+    out_ctx_xl = DotProductAttentionWithContextXL(
         input_dim=8, num_heads=2, left_context=2, rel_pos_emb_dim=4
-    )(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post).shape == (2, 4, 8)
+    )(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
+    assert out_ctx_xl.shape == (2, 4, 8)
+    assert not np.allclose(out_ctx_xl, out_xl)
 
     local_blk = LocalSelfAttention(input_dim=8, num_heads=2, dim_per_head=4, block_size=1)
     out_blk1 = local_blk(inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
@@ -146,17 +148,21 @@ def test_dot_product_attention_variants() -> None:
     out_blk2 = local_blk(inputs_far, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post)
     np.testing.assert_allclose(out_blk1[:, 0, :], out_blk2[:, 0, :], atol=1e-5)
 
-    assert LocalSelfAttentionXL(input_dim=8, num_heads=2, rel_pos_emb_dim=4)(
+    out_lsa_xl = LocalSelfAttentionXL(input_dim=8, num_heads=2, rel_pos_emb_dim=4)(
         inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
-    ).shape == (2, 4, 8)
-    assert LocalSelfAttentionRelativeBias(input_dim=8, num_heads=2)(
+    )
+    np.testing.assert_allclose(out_lsa_xl, out_xl, atol=1e-5)
+
+    out_lsa_rb = LocalSelfAttentionRelativeBias(input_dim=8, num_heads=2)(
         inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
-    ).shape == (2, 4, 8)
+    )
+    np.testing.assert_allclose(out_lsa_rb, out_no_xl, atol=1e-5)
+
     out_alibi = LocalSelfAttentionAlibi(input_dim=8, num_heads=2, left_context=2)(
         inputs, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
     )
     assert out_alibi.shape == (2, 4, 8)
-    assert np.any(np.asarray(out_alibi) != 0.0)
+    assert not np.allclose(out_alibi, out_no_xl)
 
 
 def test_grouped_query_attention() -> None:
@@ -193,7 +199,7 @@ def test_grouped_query_attention() -> None:
     assert np.all(np.abs(np.asarray(out) - 0.5) > 0.0)
 
     gqa_odd = GroupedQueryAttention(input_dim=8, num_heads=4, num_kv_heads=3, dim_per_head=2)
-    assert gqa_odd(inputs).shape == (2, 4, 8)
+    np.testing.assert_allclose(gqa_odd(inputs), np.zeros((2, 4, 8)), atol=1e-5)
 
 
 def test_self_attention_with_norm_and_residual() -> None:

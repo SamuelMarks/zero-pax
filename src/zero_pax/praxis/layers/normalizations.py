@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer
 from zero_pax.types import DType, Tensor, TensorOrScalar, WeightInit
 
@@ -19,7 +19,7 @@ def _expand_paddings_to_rank(paddings: Tensor, target_ndim: int) -> Tensor:
     """
     expanded = paddings
     while expanded.ndim < target_ndim:
-        expanded = np.expand_dims(expanded, -1)
+        expanded = _ops.expand_dims(expanded, -1)
     return expanded
 
 
@@ -77,7 +77,7 @@ class IdentityNorm(BaseNormalization):
         Returns:
             Unchanged `Tensor`.
         """
-        return np.asarray(inputs)
+        return self._to_tensor(inputs)
 
 
 class BatchNorm(BaseNormalization):
@@ -112,7 +112,7 @@ class BatchNorm(BaseNormalization):
         *args: TensorOrScalar,
         **kwargs: TensorOrScalar,
     ) -> Tensor:
-        """Normalize `inputs` across batch and spatial dimensions.
+        """Normalize `inputs` across batch and spatial dimensions and update running statistics.
 
         Args:
             inputs: Input tensor of shape `[..., C]`.
@@ -127,44 +127,64 @@ class BatchNorm(BaseNormalization):
         Returns:
             Batch-normalized `Tensor` of the same shape as `inputs`.
         """
-        x = np.asarray(inputs)
+        x = self._to_tensor(inputs)
         feat_dim = self.dim if self.dim > 0 else x.shape[-1]
         gamma_t = self.get_variable("gamma", (feat_dim,), explicit=gamma, init=self.gamma_init)
         beta_t = self.get_variable("beta", (feat_dim,), explicit=beta, init=self.beta_init)
-
-        reduce_axes = tuple(range(x.ndim - 1))
-        use_moving = (self.use_moving_avg_in_training or self.force_eval_mode) and (
-            moving_mean is not None and moving_variance is not None
+        stored_mean = self.get_variable(
+            "moving_mean",
+            (feat_dim,),
+            explicit=moving_mean,
+            init=WeightInit(method="zeros"),
+        )
+        stored_var = self.get_variable(
+            "moving_variance",
+            (feat_dim,),
+            explicit=moving_variance,
+            init=WeightInit(method="ones", scale=1.0),
         )
 
-        if use_moving and moving_mean is not None and moving_variance is not None:
-            mean_t = np.asarray(moving_mean)
-            var_t = np.asarray(moving_variance)
-        elif paddings is None:
-            mean_t = np.mean(x, axis=reduce_axes, keepdims=True)
-            var_t = np.var(x, axis=reduce_axes, keepdims=True)
+        reduce_axes = tuple(range(x.ndim - 1))
+        use_moving = self.use_moving_avg_in_training or self.force_eval_mode
+
+        if use_moving:
+            mean_t = stored_mean
+            var_t = stored_var
         else:
-            pad_t = np.asarray(paddings)
-            expanded_paddings = _expand_paddings_to_rank(pad_t, x.ndim)
-            weights = 1.0 - expanded_paddings
-            unpadded_spatial_prod = 1
-            for ax in range(pad_t.ndim, x.ndim - 1):
-                unpadded_spatial_prod *= x.shape[ax]
-            sum_weights = np.maximum(
-                np.sum(weights, axis=reduce_axes, keepdims=True) * float(unpadded_spatial_prod),
-                1.0,
+            if paddings is None:
+                mean_t = _ops.mean(x, axis=reduce_axes, keepdims=True)
+                var_t = _ops.var(x, axis=reduce_axes, keepdims=True)
+            else:
+                pad_t = _ops.asarray(paddings)
+                expanded_paddings = _expand_paddings_to_rank(pad_t, x.ndim)
+                weights = 1.0 - expanded_paddings
+                unpadded_spatial_prod = 1
+                for ax in range(pad_t.ndim, x.ndim - 1):
+                    unpadded_spatial_prod *= x.shape[ax]
+                sum_weights = _ops.maximum(
+                    _ops.sum(weights, axis=reduce_axes, keepdims=True)
+                    * float(unpadded_spatial_prod),
+                    1.0,
+                )
+                mean_t = _ops.sum(x * weights, axis=reduce_axes, keepdims=True) / sum_weights
+                var_t = (
+                    _ops.sum(_ops.square(x - mean_t) * weights, axis=reduce_axes, keepdims=True)
+                    / sum_weights
+                )
+            flat_mean = _ops.reshape(mean_t, (feat_dim,))
+            flat_var = _ops.reshape(var_t, (feat_dim,))
+            self.register_parameter(
+                "moving_mean", self.decay * stored_mean + (1.0 - self.decay) * flat_mean
             )
-            mean_t = np.sum(x * weights, axis=reduce_axes, keepdims=True) / sum_weights
-            var_t = (
-                np.sum(np.square(x - mean_t) * weights, axis=reduce_axes, keepdims=True)
-                / sum_weights
+            self.register_parameter(
+                "moving_variance", self.decay * stored_var + (1.0 - self.decay) * flat_var
             )
 
-        inv = (1.0 + gamma_t) / np.sqrt(var_t + self.epsilon)
+        inv = (1.0 + gamma_t) / _ops.sqrt(var_t + self.epsilon)
         out = (x - mean_t) * inv + beta_t
 
         if paddings is not None and self.set_padded_output_to_zero:
-            pad_t = np.asarray(paddings)
+            pad_t = _ops.asarray(paddings)
             expanded_paddings = _expand_paddings_to_rank(pad_t, x.ndim)
             out = out * (1.0 - expanded_paddings)
 
@@ -215,44 +235,47 @@ class GroupNorm(BaseNormalization):
 
         Returns:
             Normalized `Tensor` of the same shape as `inputs`.
-        """
-        x = np.asarray(inputs)
-        orig_shape = x.shape
-        rank = self.input_rank if self.input_rank is not None else len(orig_shape)
-        if rank != len(orig_shape):
-            rank = len(orig_shape)
 
+        Raises:
+            ValueError: If `self.dim > 0` and does not match the input channel dimension.
+        """
+        x = self._to_tensor(inputs)
+        orig_shape = x.shape
         channels = orig_shape[-1]
+        if self.dim > 0 and channels != self.dim:
+            raise ValueError(f"Expected input channel dimension {self.dim}, got {channels}")
+
+        rank = len(orig_shape)
         real_num_groups = min(self.num_groups, max(1, channels // max(1, self.min_group_size)))
         if channels % real_num_groups != 0:
             real_num_groups = 1
 
         group_size = channels // real_num_groups
         grouped_shape = list(orig_shape[:-1]) + [real_num_groups, group_size]
-        x_grouped = np.reshape(x, grouped_shape)
+        x_grouped = _ops.reshape(x, grouped_shape)
 
         if not self.cumulative:
             norm_axes = tuple(range(1, rank - 1)) + (rank,)
             if paddings is None:
-                mean_t = np.mean(x_grouped, axis=norm_axes, keepdims=True)
-                var_t = np.var(x_grouped, axis=norm_axes, keepdims=True)
+                mean_t = _ops.mean(x_grouped, axis=norm_axes, keepdims=True)
+                var_t = _ops.var(x_grouped, axis=norm_axes, keepdims=True)
             else:
-                pad_t = np.asarray(paddings)
+                pad_t = _ops.asarray(paddings)
                 exp_pad = _expand_paddings_to_rank(pad_t, len(grouped_shape))
                 weights = 1.0 - exp_pad
                 unpadded_spatial = 1
                 for ax in norm_axes[:-1]:
                     if ax >= pad_t.ndim:
                         unpadded_spatial *= grouped_shape[ax]
-                denom = np.maximum(
-                    np.sum(weights, axis=norm_axes[:-1], keepdims=True)
+                denom = _ops.maximum(
+                    _ops.sum(weights, axis=norm_axes[:-1], keepdims=True)
                     * float(unpadded_spatial * group_size),
                     1.0,
                 )
-                mean_t = np.sum(x_grouped * weights, axis=norm_axes, keepdims=True) / denom
+                mean_t = _ops.sum(x_grouped * weights, axis=norm_axes, keepdims=True) / denom
                 var_t = (
-                    np.sum(
-                        np.square(x_grouped - mean_t) * weights,
+                    _ops.sum(
+                        _ops.square(x_grouped - mean_t) * weights,
                         axis=norm_axes,
                         keepdims=True,
                     )
@@ -260,26 +283,26 @@ class GroupNorm(BaseNormalization):
                 )
         else:
             spatial_axes = tuple(range(2, rank - 1)) + (rank,)
-            frame_mean = np.mean(x_grouped, axis=spatial_axes, keepdims=True)
-            frame_sq_mean = np.mean(np.square(x_grouped), axis=spatial_axes, keepdims=True)
+            frame_mean = _ops.mean(x_grouped, axis=spatial_axes, keepdims=True)
+            frame_sq_mean = _ops.mean(_ops.square(x_grouped), axis=spatial_axes, keepdims=True)
             if paddings is None:
-                steps = np.arange(1, orig_shape[1] + 1)
+                steps = _ops.arange(1, orig_shape[1] + 1)
                 steps_shape = [1, orig_shape[1]] + [1] * (len(grouped_shape) - 2)
-                count = np.reshape(steps, steps_shape)
-                mean_t = np.cumsum(frame_mean, axis=1) / count
-                sq_mean = np.cumsum(frame_sq_mean, axis=1) / count
-                var_t = np.maximum(sq_mean - np.square(mean_t), 0.0)
+                count = _ops.reshape(steps, steps_shape)
+                mean_t = _ops.cumsum(frame_mean, axis=1) / count
+                sq_mean = _ops.cumsum(frame_sq_mean, axis=1) / count
+                var_t = _ops.maximum(sq_mean - _ops.square(mean_t), 0.0)
             else:
-                pad_t = np.asarray(paddings)
+                pad_t = _ops.asarray(paddings)
                 exp_pad = _expand_paddings_to_rank(pad_t, len(grouped_shape))
                 weights = 1.0 - exp_pad
-                cum_weights = np.maximum(np.cumsum(weights, axis=1), 1.0)
-                mean_t = np.cumsum(frame_mean * weights, axis=1) / cum_weights
-                sq_mean = np.cumsum(frame_sq_mean * weights, axis=1) / cum_weights
-                var_t = np.maximum(sq_mean - np.square(mean_t), 0.0)
+                cum_weights = _ops.maximum(_ops.cumsum(weights, axis=1), 1.0)
+                mean_t = _ops.cumsum(frame_mean * weights, axis=1) / cum_weights
+                sq_mean = _ops.cumsum(frame_sq_mean * weights, axis=1) / cum_weights
+                var_t = _ops.maximum(sq_mean - _ops.square(mean_t), 0.0)
 
-        normed = (x_grouped - mean_t) / np.sqrt(var_t + self.epsilon)
-        out = np.reshape(normed, orig_shape)
+        normed = (x_grouped - mean_t) / _ops.sqrt(var_t + self.epsilon)
+        out = _ops.reshape(normed, orig_shape)
 
         if self.use_scale:
             scale_t = self.get_variable("scale", (channels,), explicit=scale)
@@ -290,7 +313,7 @@ class GroupNorm(BaseNormalization):
             out = out + bias_t
 
         if paddings is not None and self.set_padded_output_to_zero:
-            pad_t = np.asarray(paddings)
+            pad_t = _ops.asarray(paddings)
             exp_pad = _expand_paddings_to_rank(pad_t, len(orig_shape))
             out = out * (1.0 - exp_pad)
 
@@ -327,7 +350,7 @@ class LayerNorm(BaseNormalization):
 
         Args:
             inputs: Input tensor of shape `[..., D]`.
-            paddings: Optional padding mask tensor (unused by standard LayerNorm).
+            paddings: Optional padding mask tensor.
             scale: Optional learned scale tensor of shape `[D]`.
             bias: Optional learned bias tensor of shape `[D]`.
             *args: Additional positional arguments.
@@ -336,11 +359,15 @@ class LayerNorm(BaseNormalization):
         Returns:
             Layer-normalized `Tensor` of the same shape as `inputs`.
         """
-        x = np.asarray(inputs)
+        x = (
+            _ops.asarray(inputs, dtype="float32")
+            if self.reductions_in_fp32
+            else self._to_tensor(inputs)
+        )
         feat_dim = self.dim if self.dim > 0 else x.shape[-1]
-        mean_t = np.mean(x, axis=-1, keepdims=True)
-        var_t = np.var(x, axis=-1, keepdims=True)
-        normed = (x - mean_t) / np.sqrt(var_t + self.epsilon)
+        mean_t = _ops.mean(x, axis=-1, keepdims=True)
+        var_t = _ops.var(x, axis=-1, keepdims=True)
+        normed = (x - mean_t) / _ops.sqrt(var_t + self.epsilon)
 
         if self.use_scale:
             default_scale_init = WeightInit(
@@ -393,13 +420,17 @@ class RmsNorm(BaseNormalization):
         Returns:
             RMS-normalized `Tensor`.
         """
-        x = np.asarray(inputs)
+        x = (
+            _ops.asarray(inputs, dtype=self.intermediate_dtype)
+            if self.intermediate_dtype is not None
+            else self._to_tensor(inputs)
+        )
         feat_dim = self.dim if self.dim > 0 else x.shape[-1]
         default_scale_init = WeightInit(method="ones" if self.direct_scale else "zeros", scale=1.0)
         scale_t = self.get_variable("scale", (feat_dim,), explicit=scale, init=default_scale_init)
 
-        var_t = np.mean(np.square(x), axis=-1, keepdims=True)
-        normed = x / np.sqrt(var_t + self.epsilon)
+        var_t = _ops.mean(_ops.square(x), axis=-1, keepdims=True)
+        normed = x / _ops.sqrt(var_t + self.epsilon)
         mult = scale_t if self.direct_scale else 1.0 + scale_t
         return normed * mult
 
@@ -431,9 +462,9 @@ class RmsNormNoScale(BaseNormalization):
         Returns:
             RMS-normalized `Tensor` without learned scaling.
         """
-        x = np.asarray(inputs)
-        var_t = np.mean(np.square(x), axis=-1, keepdims=True)
-        return x / np.sqrt(var_t + self.epsilon)
+        x = self._to_tensor(inputs)
+        var_t = _ops.mean(_ops.square(x), axis=-1, keepdims=True)
+        return x / _ops.sqrt(var_t + self.epsilon)
 
 
 __all__ = [

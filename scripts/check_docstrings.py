@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AST-based docstring verifier enforcing 100% file, module, class, function, and argument documentation."""
+"""AST-based docstring verifier enforcing 100% file, module, class, attribute, function, argument, return, and raises documentation."""
 
 from __future__ import annotations
 
@@ -11,6 +11,39 @@ from collections.abc import Sequence
 from pathlib import Path
 
 
+def _extract_section_entries(docstring: str, section_headers: tuple[str, ...]) -> set[str]:
+    """Extract identifier names documented under a Google-style docstring section.
+
+    Args:
+        docstring: Raw docstring text.
+        section_headers: Tuple of section header strings (e.g., `('Args:', 'Arguments:')`).
+
+    Returns:
+        Set of documented identifier names found in the section.
+    """
+    documented: set[str] = set()
+    in_section = False
+    section_indent: int | None = None
+
+    for line in docstring.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if stripped in section_headers:
+            in_section = True
+            section_indent = indent
+            continue
+        if in_section:
+            if section_indent is not None and indent <= section_indent and stripped.endswith(":"):
+                in_section = False
+                continue
+            match = re.match(r"^\*{0,2}([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\))?\s*:", stripped)
+            if match:
+                documented.add(match.group(1))
+    return documented
+
+
 def _extract_documented_args(docstring: str) -> set[str]:
     """Extract parameter names documented under the `Args:` section of a Google-style docstring.
 
@@ -20,31 +53,72 @@ def _extract_documented_args(docstring: str) -> set[str]:
     Returns:
         Set of parameter names found in the `Args:` block.
     """
-    documented: set[str] = set()
-    in_args = False
-    args_indent: int | None = None
+    return _extract_section_entries(docstring, ("Args:", "Arguments:", "Parameters:"))
 
-    for line in docstring.splitlines():
-        stripped = line.strip()
-        if not stripped:
+
+def _extract_documented_attributes(docstring: str) -> set[str]:
+    """Extract attribute names documented under the `Attributes:` section of a class docstring.
+
+    Args:
+        docstring: Raw class docstring text.
+
+    Returns:
+        Set of attribute names found in the `Attributes:` block.
+    """
+    return _extract_section_entries(docstring, ("Attributes:",))
+
+
+def _has_section(docstring: str, section_headers: tuple[str, ...]) -> bool:
+    """Check whether `docstring` contains any of the specified Google-style `section_headers`.
+
+    Args:
+        docstring: Raw docstring text.
+        section_headers: Section header lines to search for (e.g., `('Returns:', 'Yields:')`).
+
+    Returns:
+        True if at least one matching section header is present.
+    """
+    return any(line.strip() in section_headers for line in docstring.splitlines())
+
+
+def _is_none_return(returns_node: ast.expr | None) -> bool:
+    """Determine whether a function return annotation represents `None`.
+
+    Args:
+        returns_node: AST expression for the return annotation, or `None`.
+
+    Returns:
+        True if the return annotation is absent or `None`.
+    """
+    if returns_node is None:
+        return True
+    if isinstance(returns_node, ast.Constant) and returns_node.value is None:
+        return True
+    return isinstance(returns_node, ast.Name) and returns_node.id == "None"
+
+
+def _function_directly_raises(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Check whether `fn_node` contains an explicit `raise` statement (excluding nested defs).
+
+    Args:
+        fn_node: Function or method AST node.
+
+    Returns:
+        True if the function body directly raises an exception.
+    """
+    queue: list[ast.AST] = list(fn_node.body)
+    while queue:
+        current = queue.pop(0)
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        if stripped in ("Args:", "Arguments:", "Parameters:"):
-            in_args = True
-            args_indent = indent
-            continue
-        if in_args:
-            if args_indent is not None and indent <= args_indent and stripped.endswith(":"):
-                in_args = False
-                continue
-            match = re.match(r"^\*{0,2}([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\))?\s*:", stripped)
-            if match:
-                documented.add(match.group(1))
-    return documented
+        if isinstance(current, ast.Raise):
+            return True
+        queue.extend(ast.iter_child_nodes(current))
+    return False
 
 
 def check_file_docstrings(file_path: Path) -> list[str]:
-    """Check a single Python file for 100% module, class, function, and argument docstrings.
+    """Check a single Python file for 100% module, class, attribute, function, arg, return, and raises docstrings.
 
     Args:
         file_path: Path to the Python file to inspect.
@@ -67,6 +141,23 @@ def check_file_docstrings(file_path: Path) -> list[str]:
                 errors.append(
                     f"{file_path}:{node.lineno}: Class '{node.name}' is missing a docstring"
                 )
+                continue
+
+            public_attrs: list[str] = []
+            for stmt in node.body:
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    attr_name = stmt.target.id
+                    if not attr_name.startswith("_") and attr_name != "model_config":
+                        public_attrs.append(attr_name)
+
+            if public_attrs:
+                doc_attrs = _extract_documented_attributes(cls_doc)
+                for attr_name in public_attrs:
+                    if attr_name not in doc_attrs:
+                        errors.append(
+                            f"{file_path}:{node.lineno}: Class '{node.name}' is missing docstring for attribute '{attr_name}'"
+                        )
+
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             fn_doc = ast.get_docstring(node)
             if not fn_doc or not fn_doc.strip():
@@ -92,6 +183,20 @@ def check_file_docstrings(file_path: Path) -> list[str]:
                             f"{file_path}:{node.lineno}: Function/method '{node.name}' is missing docstring for argument '{p_name}'"
                         )
 
+            if (
+                node.name != "__init__"
+                and not _is_none_return(node.returns)
+                and not _has_section(fn_doc, ("Returns:", "Yields:"))
+            ):
+                errors.append(
+                    f"{file_path}:{node.lineno}: Function/method '{node.name}' is missing 'Returns:' or 'Yields:' docstring section"
+                )
+
+            if _function_directly_raises(node) and not _has_section(fn_doc, ("Raises:",)):
+                errors.append(
+                    f"{file_path}:{node.lineno}: Function/method '{node.name}' is missing 'Raises:' docstring section"
+                )
+
     return errors
 
 
@@ -105,7 +210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         Exit code 0 if all docstrings are complete, 1 otherwise.
     """
     parser = argparse.ArgumentParser(
-        description="Verify 100% docstring coverage across modules, classes, functions, and arguments."
+        description="Verify 100% docstring coverage across modules, classes, attributes, functions, arguments, returns, and raises."
     )
     parser.add_argument(
         "paths",
@@ -138,7 +243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(
-        f"Docstring check passed: 100% file, module, class, function, and argument coverage across {len(files)} files."
+        f"Docstring check passed: 100% file, module, class, attribute, function, argument, return, and raises coverage across {len(files)} files."
     )
     return 0
 

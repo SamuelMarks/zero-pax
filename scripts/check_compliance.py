@@ -3,18 +3,19 @@
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
+from enum import Enum
 from pathlib import Path
 
 from ml_ecosystem_snapshots.cli.resolver import resolve_snapshot_path
 from ml_ecosystem_snapshots.compliance import score_compliance
 from ml_switcheroo_ir.schema.ghost import GhostParam, GhostRef, ParameterKind
 from ml_switcheroo_ir.types import JsonValue
+from pydantic import BaseModel
 
 
 def _to_parameter_kind(kind_str: str) -> ParameterKind:
@@ -37,11 +38,11 @@ def _to_parameter_kind(kind_str: str) -> ParameterKind:
     return ParameterKind.POSITIONAL_OR_KEYWORD
 
 
-def _extract_class_ghost_ref(cls_obj: type, api_path: str) -> GhostRef:
-    """Build a GhostRef from a live zero_pax class or Pydantic model.
+def _extract_class_ghost_ref(cls_obj: type[BaseModel | Enum], api_path: str) -> GhostRef:
+    """Build a GhostRef from a live zero_pax Pydantic model or Enum class.
 
     Args:
-        cls_obj: The Python class or Pydantic BaseModel subclass to inspect.
+        cls_obj: The Pydantic BaseModel or Enum subclass to inspect.
         api_path: Canonical snapshot API path (e.g., 'praxis.layers.ReLU').
 
     Returns:
@@ -50,16 +51,8 @@ def _extract_class_ghost_ref(cls_obj: type, api_path: str) -> GhostRef:
     params: list[GhostParam] = []
     seen_names: set[str] = set()
 
-    model_fields = vars(cls_obj).get("model_fields")
-    if model_fields is None:
-        for base in cls_obj.__mro__:
-            base_fields = vars(base).get("model_fields")
-            if isinstance(base_fields, Mapping):
-                model_fields = base_fields
-                break
-
-    if isinstance(model_fields, Mapping):
-        for field_name in model_fields:
+    if issubclass(cls_obj, BaseModel):
+        for field_name in cls_obj.model_fields:
             if field_name not in seen_names:
                 seen_names.add(field_name)
                 params.append(
@@ -71,33 +64,13 @@ def _extract_class_ghost_ref(cls_obj: type, api_path: str) -> GhostRef:
                     )
                 )
 
-    for base in cls_obj.__mro__:
-        if base.__name__ in ("BaseModel", "object"):
-            continue
-        base_ann = vars(base).get("__annotations__", {})
-        if isinstance(base_ann, Mapping):
-            for attr_name in base_ann:
-                if not str(attr_name).startswith("_") and str(attr_name) not in seen_names:
-                    seen_names.add(str(attr_name))
-                    params.append(
-                        GhostParam(
-                            name=str(attr_name),
-                            kind=ParameterKind.POSITIONAL_OR_KEYWORD,
-                            default="None",
-                            annotation=None,
-                        )
-                    )
-        for attr_name in vars(base):
-            if (
-                not attr_name.startswith("_")
-                and attr_name not in ("model_config", "model_fields", "model_computed_fields")
-                and attr_name not in seen_names
-                and not callable(vars(base)[attr_name])
-            ):
-                seen_names.add(attr_name)
+    if issubclass(cls_obj, Enum):
+        for member in cls_obj:
+            if member.name not in seen_names:
+                seen_names.add(member.name)
                 params.append(
                     GhostParam(
-                        name=attr_name,
+                        name=member.name,
                         kind=ParameterKind.POSITIONAL_OR_KEYWORD,
                         default="None",
                         annotation=None,
@@ -158,21 +131,15 @@ def verify_snapshot_compliance() -> tuple[bool, list[str]]:
     Returns:
         Tuple of (is_compliant, list_of_error_messages).
     """
+    from zero_pax.praxis.layers import LAYER_REGISTRY
+
     errors: list[str] = []
     snapshot_path_str = resolve_snapshot_path("pax_v1.4.0")
     snapshot_path = Path(snapshot_path_str)
     if not snapshot_path.exists():
-        from ml_ecosystem_snapshots.index import ensure_snapshots_downloaded
-
-        ensure_snapshots_downloaded(["pax_v1.4.0.json"])
-        snapshot_path = Path(resolve_snapshot_path("pax_v1.4.0"))
-
-    if not snapshot_path.exists():
         return False, [f"Snapshot file not found: {snapshot_path}"]
 
     raw_snapshot: Mapping[str, JsonValue] = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    layers_mod = importlib.import_module("zero_pax.praxis.layers")
-    layers_vars = vars(layers_mod)
 
     target_refs: list[GhostRef] = []
     cats_val = raw_snapshot.get("categories", {})
@@ -185,17 +152,11 @@ def verify_snapshot_compliance() -> tuple[bool, list[str]]:
         for item in items:
             ref_ghost = GhostRef.model_validate(item)
             symbol_name = ref_ghost.name
-            if symbol_name not in layers_vars:
+            if symbol_name not in LAYER_REGISTRY:
                 errors.append(f"Missing symbol in zero_pax.praxis.layers: {ref_ghost.api_path}")
                 continue
 
-            cls_obj = layers_vars[symbol_name]
-            if not isinstance(cls_obj, type):
-                errors.append(
-                    f"Symbol {ref_ghost.api_path} is not a class (got {type(cls_obj).__name__})"
-                )
-                continue
-
+            cls_obj = LAYER_REGISTRY[symbol_name]
             extracted_ref = _extract_class_ghost_ref(cls_obj, ref_ghost.api_path)
             extracted_param_names = {p.name for p in extracted_ref.params}
 
@@ -225,6 +186,14 @@ def verify_semantic_plan() -> tuple[bool, list[str]]:
     Returns:
         Tuple of (is_compliant, list_of_error_messages).
     """
+    from zero_pax import EXPORTED_NAMES as ZERO_PAX_EXPORTS
+    from zero_pax.praxis.layers import EXPORTED_NAMES as LAYERS_EXPORTS
+
+    module_exports: Mapping[str, frozenset[str]] = {
+        "zero_pax": ZERO_PAX_EXPORTS,
+        "zero_pax.praxis.layers": LAYERS_EXPORTS,
+    }
+
     plan_path = Path("SEMANTIC_PLAN.md")
     if not plan_path.exists():
         return True, []
@@ -261,15 +230,13 @@ def verify_semantic_plan() -> tuple[bool, list[str]]:
     for mod_name, funcs in modules.items():
         if not funcs:
             continue
-        try:
-            mod = importlib.import_module(mod_name)
-        except ImportError:
+        exported_set = module_exports.get(mod_name)
+        if exported_set is None:
             missing.extend([f"{mod_name}.{f}" for f in funcs])
             continue
-        mod_vars = vars(mod)
         for f_name in funcs:
             clean_name = f_name.strip()
-            if clean_name and clean_name not in mod_vars:
+            if clean_name and clean_name not in exported_set:
                 missing.append(f"{mod_name}.{clean_name}")
 
     return len(missing) == 0, missing

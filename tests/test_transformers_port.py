@@ -125,7 +125,7 @@ def test_transformer_and_stacks() -> None:
         ngrammer_tpl=ReLU(),
     )
     out = tr(inputs, paddings=paddings, cross_inputs=cross)
-    assert out.shape == (2, 4, 8)
+    np.testing.assert_allclose(out, inputs, atol=1e-5)
 
     tr_post = Transformer(
         model_dims=8,
@@ -134,7 +134,8 @@ def test_transformer_and_stacks() -> None:
         use_cross_attention=True,
         norm_policy="post",
     )
-    assert tr_post(inputs, cross_inputs=cross).shape == (2, 4, 8)
+    out_tr_post = tr_post(inputs, cross_inputs=cross)
+    np.testing.assert_allclose(np.mean(out_tr_post, axis=-1), np.zeros((2, 4)), atol=1e-5)
 
     stack = StackedTransformer(
         num_layers=2,
@@ -146,7 +147,9 @@ def test_transformer_and_stacks() -> None:
         num_experts=2,
         ngrammer_tpls=[Identity(), Identity()],
     )
-    assert stack(inputs, paddings=paddings, cross_inputs=cross).shape == (2, 4, 8)
+    np.testing.assert_allclose(
+        stack(inputs, paddings=paddings, cross_inputs=cross), inputs, atol=1e-5
+    )
 
     stack_seq_tpl = StackedTransformer(
         num_layers=2,
@@ -155,12 +158,14 @@ def test_transformer_and_stacks() -> None:
     np.testing.assert_allclose(stack_seq_tpl(inputs), np.maximum(0.0, inputs))
 
     rep = StackedTransformerRepeated(block=stack, x_times=2)
-    assert rep(inputs, paddings=paddings, cross_inputs=cross).shape == (2, 4, 8)
-    assert StackedTransformerRepeated()(inputs).shape == (2, 4, 8)
+    np.testing.assert_allclose(
+        rep(inputs, paddings=paddings, cross_inputs=cross), inputs, atol=1e-5
+    )
+    np.testing.assert_allclose(StackedTransformerRepeated()(inputs), inputs, atol=1e-5)
 
     pipe = PipelinedTransformer(pipeline_stage=stack, num_pipeline_stages=2, circular_repeat=1)
-    assert pipe(inputs, paddings=paddings).shape == (2, 4, 8)
-    assert PipelinedTransformer()(inputs).shape == (2, 4, 8)
+    np.testing.assert_allclose(pipe(inputs, paddings=paddings), inputs, atol=1e-5)
+    np.testing.assert_allclose(PipelinedTransformer()(inputs), inputs, atol=1e-5)
 
 
 def test_language_and_sequence_models() -> None:

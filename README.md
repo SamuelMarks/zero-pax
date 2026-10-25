@@ -1,14 +1,14 @@
 # Zero Framework API Shell
 
-> **Note:** This repository is an API-compatible shell. All underlying math, autodiff, and graph execution has been migrated to the [ml-switcheroo-compiler](https://github.com/SamuelMarks/ml-switcheroo-compiler) backend. This repository purely implements frontend routing and syntactic parity for the target framework.
+> **Note:** This repository is an API-compatible pure-Python implementation built on [ml-switcheroo-ir](https://github.com/SamuelMarks/ml-switcheroo-ir) and `pydantic`, with zero runtime `numpy` or third-party execution dependencies.
 
 # zero-pax
 
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/SamuelMarks/zero-pax/actions/workflows/ci.yml/badge.svg)](https://github.com/SamuelMarks/zero-pax/actions)
-[![Test Coverage](https://img.shields.io/badge/test_coverage-67.7%25-orange.svg)](#)(https://github.com/SamuelMarks/zero-pax/actions)
-[![Doc Coverage](https://img.shields.io/badge/doc_coverage-100%25-brightgreen.svg)](#)(https://github.com/SamuelMarks/zero-pax/wiki)
-[![API Compliance](https://img.shields.io/badge/api_compliance-0%25-red.svg)](#)
+[![Test Coverage](https://img.shields.io/badge/test_coverage-100%25-brightgreen.svg)](https://github.com/SamuelMarks/zero-pax/actions)
+[![Doc Coverage](https://img.shields.io/badge/doc_coverage-100%25-brightgreen.svg)](https://github.com/SamuelMarks/zero-pax/wiki)
+[![API Compliance](https://img.shields.io/badge/api_compliance-100%25-brightgreen.svg)](#)
 
 **Version:** 0.1.0
 
@@ -19,9 +19,9 @@
 `zero-pax` provides a **zero-dependency, pure Python implementation of the [Pax/Praxis](https://github.com/google/pax) API surface**. It accurately mirrors the mathematical semantics of the 108 Praxis layers—ranging from standard Activations and Convolutions to complex Attention mechanisms and Transformer blocks. 
 
 Standard ML frameworks often bring heavy dependency chains, making them brittle and challenging to deploy in constrained or browser-based environments. `zero-pax` bypasses this by:
-1. Relying solely on the Python Standard Library and the `ml-switcheroo-compiler` backend for array evaluations.
-2. Replacing complex configurations with strict array validation and pure mathematical forward passes.
-3. Hooking seamlessly into the `ml-switcheroo-compiler` to trace operations via proxy tensors, enabling Reverse-mode automatic differentiation (AD), static shape inference, and deterministic Graph generation.
+1. Relying solely on the Python Standard Library, `pydantic`, and `ml-switcheroo-ir` types for pure-Python tensor evaluations.
+2. Replacing complex configurations with strict tensor validation and pure mathematical forward passes.
+3. Interoperating cleanly with the `ml-switcheroo-ir` Intermediate Representation for deterministic graph and dtype representation.
 
 This allows complex Pax/Praxis models to be statically compiled, optimized, and deployed as source-to-browser payloads (like WASM or WGSL shaders) without any third-party overhead.
 

@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from typing import Generic, Literal, Protocol, TypeVar, Union, runtime_checkable
+from collections.abc import Callable, Sequence
+from typing import Generic, Literal, Optional, Protocol, TypeVar, Union, runtime_checkable
 
-from ml_switcheroo_compiler import Tensor
-from ml_switcheroo_compiler.core.dtype import DType as CompilerDType
-from ml_switcheroo_compiler.core.shape import TensorOrScalar
+from ml_switcheroo_ir.types import DType as CompilerDType
 from pydantic import BaseModel, ConfigDict, Field
 
-from zero_pax import _tensor_ops as np
+from zero_pax import _tensor_ops as _ops
+from zero_pax._tensor_ops import Tensor, TensorOrScalar
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -21,26 +20,16 @@ Shape = Union[tuple[int, ...], Sequence[int]]
 PaddingTuple = tuple[tuple[int, int], ...]
 RNNState = Union[Tensor, tuple[Tensor, Tensor]]
 QuantizerOutput = tuple[Tensor, Tensor, dict[str, Union[Tensor, float]]]
-PoolingOutput = tuple[Tensor, Union[Tensor, None]]
-SplitDimsMapping = Union[Sequence[Union[str, Sequence[str], None]], None]
+PoolingOutput = tuple[Tensor, Optional[Tensor]]
+SplitDimsMapping = Optional[Sequence[Union[str, Sequence[str], None]]]
 ActivationType = Union[
-    Literal["NONE", "RELU", "LEAKY_RELU", "SIGMOID", "TANH", "GELU", "SWISH", "SILU"],
-    str,
+    Literal["NONE", "RELU", "LEAKY_RELU", "SIGMOID", "TANH", "GELU", "SWISH", "SILU"], str
 ]
-ConfigParamValue = Union[
-    TensorOrScalar,
-    str,
-    int,
-    float,
-    bool,
-    Sequence[int],
-    Sequence[str],
-    None,
-]
+ConfigParamValue = Union[TensorOrScalar, str, int, float, bool, Sequence[int], Sequence[str], None]
 
 
 @runtime_checkable
-class CallableLayer(Protocol):
+class CallableLayerProtocol(Protocol):
     """Protocol representing any callable layer accepting tensor inputs."""
 
     def __call__(
@@ -49,8 +38,31 @@ class CallableLayer(Protocol):
         /,
         *args: TensorOrScalar,
         **kwargs: TensorOrScalar,
-    ) -> Tensor:
+    ) -> TensorOrScalar:
         """Apply the layer transformation to `inputs`.
+
+        Args:
+            inputs: Input tensor or array.
+            *args: Additional positional tensor or scalar arguments.
+            **kwargs: Additional keyword tensor or scalar arguments.
+
+        Returns:
+            Transformed output `Tensor` or tensor-like value.
+        """
+
+
+@runtime_checkable
+class StrictCallableLayerProtocol(Protocol):
+    """Protocol representing a resolved layer returning a `Tensor`."""
+
+    def __call__(
+        self,
+        inputs: TensorOrScalar,
+        /,
+        *args: TensorOrScalar,
+        **kwargs: TensorOrScalar,
+    ) -> Tensor:
+        """Apply the layer transformation to `inputs` and return a `Tensor`.
 
         Args:
             inputs: Input tensor or array.
@@ -60,6 +72,13 @@ class CallableLayer(Protocol):
         Returns:
             Transformed output `Tensor`.
         """
+
+
+CallableLayer = Union[
+    CallableLayerProtocol,
+    Callable[[TensorOrScalar], TensorOrScalar],
+    Callable[[TensorOrScalar, TensorOrScalar], TensorOrScalar],
+]
 
 
 class BaseParameter:
@@ -75,13 +94,13 @@ class BaseParameter:
         Args:
             value: Initial parameter value.
         """
-        self.value: TensorOrScalar = value
+        self.value: Tensor = _ops.asarray(value)
 
-    def __call__(self) -> TensorOrScalar:
+    def __call__(self) -> Tensor:
         """Return the underlying parameter value.
 
         Returns:
-            Stored parameter value.
+            Stored parameter `Tensor`.
         """
         return self.value
 
@@ -106,24 +125,28 @@ class WeightInit(BaseModel):
     def init_tensor(self, shape: Sequence[int], dtype: DType = None) -> Tensor:
         """Create a deterministic tensor of `shape` according to this initialization strategy.
 
+        Uses low-discrepancy Weyl sequences on `(0, 1)` for uniform distributions and the
+        Box-Muller transform for Gaussian distributions so that mean and variance match the
+        theoretical initialization distribution.
+
         Args:
             shape: Target tensor dimensions.
-            dtype: Optional compiler data type for the initialized tensor.
+            dtype: Optional compiler data type or string name for the initialized tensor.
 
         Returns:
             Initialized `Tensor` with shape `tuple(shape)`.
         """
         dims = tuple(int(d) for d in shape)
-        compiler_dtype: CompilerDType | None = dtype if isinstance(dtype, CompilerDType) else None
+        compiler_dtype = _ops.resolve_dtype(dtype)
         method_lower = self.method.lower()
         if method_lower == "zeros":
-            return np.zeros(dims, dtype=compiler_dtype)
+            return _ops.zeros(dims, dtype=compiler_dtype)
         if method_lower == "ones":
-            return np.ones(dims, dtype=compiler_dtype) * self.scale
+            return _ops.ones(dims, dtype=compiler_dtype) * self.scale
         if method_lower == "constant":
-            return np.full(dims, self.scale, dtype=compiler_dtype)
+            return _ops.full(dims, self.scale, dtype=compiler_dtype)
         if self.scale == 0.0:
-            return np.zeros(dims, dtype=compiler_dtype)
+            return _ops.zeros(dims, dtype=compiler_dtype)
 
         total_elems = 1
         for d in dims:
@@ -133,9 +156,11 @@ class WeightInit(BaseModel):
         fan_out = float(dims[-1]) if len(dims) >= 2 else fan_in
 
         seed_offset = float((self.seed if self.seed is not None else 0) % 997)
-        indices = np.arange(1, total_elems + 1, dtype=compiler_dtype) + seed_offset
-        golden_phase = indices * 0.6180339887498949
-        wave = np.sin(indices * 1.618033988749895 + np.cos(golden_phase))
+        indices = _ops.arange(1, total_elems + 1, dtype=compiler_dtype) + seed_offset
+        u1_raw = indices * 0.6180339887498949 + 0.123456789
+        u1 = u1_raw - _ops.floor(u1_raw)
+        u2_raw = indices * 0.7548776662466927 + 0.567891234
+        u2 = u2_raw - _ops.floor(u2_raw)
 
         if method_lower in ("uniform", "glorot_uniform", "xavier_uniform", "kaiming_uniform"):
             denom = (
@@ -148,7 +173,7 @@ class WeightInit(BaseModel):
                 if method_lower != "uniform"
                 else self.scale
             )
-            flat = wave * limit
+            flat = (2.0 * u1 - 1.0) * limit
         elif method_lower in ("normal", "gaussian", "glorot_normal", "kaiming_normal"):
             denom = (
                 (fan_in + fan_out)
@@ -160,12 +185,14 @@ class WeightInit(BaseModel):
                 if method_lower not in ("normal", "gaussian")
                 else self.scale
             )
-            flat = wave * std
+            u1_safe = _ops.clip(u1, 1e-7, 1.0 - 1e-7)
+            z_norm = _ops.sqrt(-2.0 * _ops.log(u1_safe)) * _ops.cos(2.0 * math.pi * u2)
+            flat = z_norm * std
         else:
             limit = self.scale * math.sqrt(6.0 / max(1.0, fan_in + fan_out))
-            flat = wave * limit
+            flat = (2.0 * u1 - 1.0) * limit
 
-        return np.reshape(flat, dims)
+        return _ops.reshape(flat, dims)
 
 
 class WeightSharding(BaseModel):
@@ -221,7 +248,19 @@ class PaxConfig(BaseModel, Generic[T_co]):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     cls: type[T_co] | None = None
-    params: Mapping[str, ConfigParamValue] = Field(default_factory=dict)
+    params: dict[str, ConfigParamValue] = Field(default_factory=dict)
+
+    def set(self, **kwargs: ConfigParamValue) -> PaxConfig[T_co]:
+        """Update configuration parameters in-place and return `self`.
+
+        Args:
+            **kwargs: Parameter key-value pairs to store in `self.params`.
+
+        Returns:
+            Updated `PaxConfig` instance (`self`).
+        """
+        self.params.update(kwargs)
+        return self
 
     def clone(self) -> PaxConfig[T_co]:
         """Return a shallow copy of this `PaxConfig` template.

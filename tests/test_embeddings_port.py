@@ -95,8 +95,11 @@ def test_positional_embeddings() -> None:
     np.testing.assert_allclose(out_2d[0, 0], np.zeros((8,)), atol=1e-6)
     np.testing.assert_allclose(out_2d[0, -1], np.zeros((8,)), atol=1e-6)
 
+    out_hw = PositionalEmbedding2D(h=2, w=2, embedding_dims=4, pos_transform="h_w")()
     out_wh = PositionalEmbedding2D(h=2, w=2, embedding_dims=5, pos_transform="w_h")()
     assert out_wh.shape == (1, 4, 5)
+    np.testing.assert_allclose(out_wh[:, :, :2], out_hw[:, :, 2:4], atol=1e-5)
+    np.testing.assert_allclose(out_wh[:, :, 2:4], out_hw[:, :, :2], atol=1e-5)
 
     tpe = TrainablePositionalEmbedding(max_seq_length=6, embedding_dims=4, lookup_style="INDEX")
     w_pos = np.arange(24, dtype=np.float32).reshape((6, 4))
@@ -163,4 +166,4 @@ def test_softmax_cross_entropy_and_bitempered() -> None:
         logits, labels=np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32)
     )
     assert bt_loss.shape == (2,)
-    assert np.all(np.asarray(bt_loss) > 0.0)
+    assert float(bt_loss[0]) > float(bt_loss[1]) > 0.0

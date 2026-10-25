@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from zero_pax import _tensor_ops as np
-from zero_pax.praxis.base import BasePraxisLayer
-from zero_pax.types import Tensor, TensorOrScalar
+from enum import Enum
 
 
-class AutodiffCheckpointType(BasePraxisLayer):
-    """Configuration class defining activation rematerialization (checkpointing) policies.
+class AutodiffCheckpointType(str, Enum):
+    """Enumeration defining activation rematerialization (checkpointing) policies.
 
     Attributes:
         SAVE_NOTHING: Save no intermediate activations.
@@ -30,23 +28,23 @@ class AutodiffCheckpointType(BasePraxisLayer):
         SAVE_DOT_EXCEPT_LOGITS: Save dot products except final logits.
     """
 
-    SAVE_NOTHING: str = "save_nothing"
-    SAVE_UNET_ALL_CONV: str = "save_unet_all_conv"
-    SAVE_UNET_CONV: str = "save_unet_conv"
-    SAVE_EVERYTHING: str = "save_everything"
-    SAVE_QKV_OUT_PROJ: str = "save_qkv_out_proj"
-    SAVE_OUT_PROJ: str = "save_out_proj"
-    SAVE_CONTEXT: str = "save_context"
-    SAVE_CONTEXT_AND_OUT_PROJ: str = "save_encoded_and_out_proj"
-    SAVE_DOT_ONLY: str = "save_dot_only"
-    SAVE_DOT_WITH_NO_BATCH_DIM: str = "save_dot_with_no_batch_dims"
-    SAVE_DOT_FOR_MLPERF_200B: str = "save_dot_for_mlperf_200b"
-    SAVE_ITERATION_INPUT: str = "save_iteration_input"
-    SAVE_TRANSFORMER_LAYER_OUTPUT: str = "save_transformer_layer_output"
-    SAVE_QUANTIZED: str = "save_quantized"
-    SAVE_QKV_OUT_PROJ_SEPARATE: str = "save_qkv_out_proj_separate"
-    SAVE_DOT_EXCEPT_LOGITS_FFN1: str = "save_dot_except_logits_ffn1"
-    SAVE_DOT_EXCEPT_LOGITS: str = "save_dot_except_logits"
+    SAVE_NOTHING = "save_nothing"
+    SAVE_UNET_ALL_CONV = "save_unet_all_conv"
+    SAVE_UNET_CONV = "save_unet_conv"
+    SAVE_EVERYTHING = "save_everything"
+    SAVE_QKV_OUT_PROJ = "save_qkv_out_proj"
+    SAVE_OUT_PROJ = "save_out_proj"
+    SAVE_CONTEXT = "save_context"
+    SAVE_CONTEXT_AND_OUT_PROJ = "save_encoded_and_out_proj"
+    SAVE_DOT_ONLY = "save_dot_only"
+    SAVE_DOT_WITH_NO_BATCH_DIM = "save_dot_with_no_batch_dims"
+    SAVE_DOT_FOR_MLPERF_200B = "save_dot_for_mlperf_200b"
+    SAVE_ITERATION_INPUT = "save_iteration_input"
+    SAVE_TRANSFORMER_LAYER_OUTPUT = "save_transformer_layer_output"
+    SAVE_QUANTIZED = "save_quantized"
+    SAVE_QKV_OUT_PROJ_SEPARATE = "save_qkv_out_proj_separate"
+    SAVE_DOT_EXCEPT_LOGITS_FFN1 = "save_dot_except_logits_ffn1"
+    SAVE_DOT_EXCEPT_LOGITS = "save_dot_except_logits"
 
     @classmethod
     def values(cls) -> tuple[str, ...]:
@@ -55,47 +53,11 @@ class AutodiffCheckpointType(BasePraxisLayer):
         Returns:
             Tuple of checkpoint policy strings.
         """
-        return (
-            "save_nothing",
-            "save_unet_all_conv",
-            "save_unet_conv",
-            "save_everything",
-            "save_qkv_out_proj",
-            "save_out_proj",
-            "save_context",
-            "save_encoded_and_out_proj",
-            "save_dot_only",
-            "save_dot_with_no_batch_dims",
-            "save_dot_for_mlperf_200b",
-            "save_iteration_input",
-            "save_transformer_layer_output",
-            "save_quantized",
-            "save_qkv_out_proj_separate",
-            "save_dot_except_logits_ffn1",
-            "save_dot_except_logits",
-        )
-
-    def __call__(
-        self,
-        inputs: TensorOrScalar,
-        *args: TensorOrScalar,
-        **kwargs: TensorOrScalar,
-    ) -> Tensor:
-        """Apply checkpoint policy wrapper to `inputs`.
-
-        Args:
-            inputs: Input activation tensor.
-            *args: Additional positional arguments.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            Checkpointed `Tensor` identical in value to `inputs`.
-        """
-        return np.asarray(inputs)
+        return tuple(member.value for member in cls)
 
 
-class LanguageModelType(BasePraxisLayer):
-    """Configuration class defining language model attention masking modes.
+class LanguageModelType(str, Enum):
+    """Enumeration defining language model attention masking modes.
 
     Attributes:
         CAUSAL: Autoregressive causal masking.
@@ -103,9 +65,9 @@ class LanguageModelType(BasePraxisLayer):
         BIDIRECTIONAL: Full bidirectional self-attention masking.
     """
 
-    CAUSAL: str = "causal"
-    PREFIX: str = "prefix"
-    BIDIRECTIONAL: str = "bidirectional"
+    CAUSAL = "causal"
+    PREFIX = "prefix"
+    BIDIRECTIONAL = "bidirectional"
 
     @classmethod
     def values(cls) -> tuple[str, ...]:
@@ -114,25 +76,7 @@ class LanguageModelType(BasePraxisLayer):
         Returns:
             Tuple of valid language model mode strings.
         """
-        return ("causal", "prefix", "bidirectional")
-
-    def __call__(
-        self,
-        inputs: TensorOrScalar,
-        *args: TensorOrScalar,
-        **kwargs: TensorOrScalar,
-    ) -> Tensor:
-        """Pass `inputs` through the language model type configuration.
-
-        Args:
-            inputs: Input tensor.
-            *args: Additional positional arguments.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            Output `Tensor`.
-        """
-        return np.asarray(inputs)
+        return tuple(member.value for member in cls)
 
 
 __all__ = [
