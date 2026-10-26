@@ -644,7 +644,7 @@ def test_static_lint_and_docstring_scripts(tmp_path: Path) -> None:
             snapshot_path=None,
             cache_root=tmp_path / "empty_cache",
         )
-        == 0
+        == 1
     )
     assert check_compliance.main() == 0
 

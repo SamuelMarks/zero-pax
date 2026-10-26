@@ -17,6 +17,7 @@ ALLOWED_THIRD_PARTY: frozenset[str] = frozenset(
         "cdd_python",
         "cdd",
         "ml_switcheroo_ir",
+        "ml_switcheroo_compiler",
         "ml_ecosystem_snapshots",
         "zero_pax",
         "zero_jax",

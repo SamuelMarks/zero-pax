@@ -59,7 +59,7 @@ repos:
 
       - id: pytest
         name: Pytest with 100% Line and Branch Coverage
-        entry: pytest --cov=src/zero_pax --cov-branch --cov-report=term-missing --cov-fail-under=100
+        entry: pytest --cov=src/zero_pax --cov=scripts --cov-branch --cov-report=term-missing --cov-fail-under=100
         language: system
         types: [python]
         pass_filenames: false

@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from types import ModuleType
 
+import ml_ecosystem_snapshots
 from pydantic import BaseModel
 
 import zero_pax
@@ -83,15 +84,25 @@ def _find_snapshot_path(cache_root: Path | None = None) -> Path | None:
     Returns:
         Path to `pax_v1.4.0.json` if found, otherwise `None`.
     """
-    base = (
-        cache_root
-        if cache_root is not None
-        else (Path.home() / ".cache" / "ml_ecosystem_snapshots")
-    )
-    candidates = [
-        base / "pax_v1.4.0.json",
-        base / "snapshots" / "pax_v1.4.0.json",
-    ]
+    candidates: list[Path] = []
+    if cache_root is not None:
+        candidates.extend(
+            [
+                cache_root / "pax_v1.4.0.json",
+                cache_root / "snapshots" / "pax_v1.4.0.json",
+            ]
+        )
+    else:
+        default_cache = Path.home() / ".cache" / "ml_ecosystem_snapshots"
+        pkg_root = Path(ml_ecosystem_snapshots.__file__).resolve().parent
+        candidates.extend(
+            [
+                default_cache / "pax_v1.4.0.json",
+                default_cache / "snapshots" / "pax_v1.4.0.json",
+                pkg_root / "snapshots" / "pax_v1.4.0.json",
+            ]
+        )
+
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -310,7 +321,9 @@ def main(
     errors.extend(verify_semantic_plan(eff_plan))
 
     eff_snap = snapshot_path if snapshot_path is not None else _find_snapshot_path(cache_root)
-    if eff_snap is not None:
+    if eff_snap is None:
+        errors.append("Missing snapshot file: pax_v1.4.0.json")
+    else:
         errors.extend(verify_snapshot_compliance(eff_snap))
 
     if errors:

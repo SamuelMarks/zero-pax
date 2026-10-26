@@ -31,13 +31,13 @@ ignore = ["E501", "D107", "D203", "D213"]
 convention = "google"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
-addopts = "--cov=src/zero_pax --cov-branch --cov-report=term-missing --cov-fail-under=100"
+pythonpath = ["src", "."]
+addopts = "--cov=src/zero_pax --cov=scripts --cov-branch --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["src/zero_pax"]
+source = ["src/zero_pax", "scripts"]
 
 [tool.coverage.report]
 fail_under = 100

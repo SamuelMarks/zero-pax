@@ -1,2 +1,3 @@
 pydantic
-ml-switcheroo-ir @ git+https://github.com/SamuelMarks/ml-switcheroo-ir.git@master
+ml-switcheroo-ir @ https://github.com/SamuelMarks/ml-switcheroo-ir/releases/download/v0.0.4/ml_switcheroo_ir-0.0.4-py3-none-any.whl
+ml-switcheroo-compiler @ https://github.com/SamuelMarks/ml-switcheroo-compiler/releases/download/v0.0.1/ml_switcheroo_compiler-0.0.1-py3-none-any.whl
