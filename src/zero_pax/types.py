@@ -21,11 +21,22 @@ PaddingTuple = tuple[tuple[int, int], ...]
 RNNState = Union[Tensor, tuple[Tensor, Tensor]]
 QuantizerOutput = tuple[Tensor, Tensor, dict[str, Union[Tensor, float]]]
 PoolingOutput = tuple[Tensor, Optional[Tensor]]
+LayerOutput = Union[Tensor, PoolingOutput, RNNState, QuantizerOutput]
 SplitDimsMapping = Optional[Sequence[Union[str, Sequence[str], None]]]
 ActivationType = Union[
     Literal["NONE", "RELU", "LEAKY_RELU", "SIGMOID", "TANH", "GELU", "SWISH", "SILU"], str
 ]
-ConfigParamValue = Union[TensorOrScalar, str, int, float, bool, Sequence[int], Sequence[str], None]
+ConfigParamValue = Union[
+    TensorOrScalar,
+    BaseModel,
+    str,
+    int,
+    float,
+    bool,
+    Sequence[int],
+    Sequence[str],
+    None,
+]
 
 
 @runtime_checkable
@@ -162,6 +173,31 @@ class WeightInit(BaseModel):
         u2_raw = indices * 0.7548776662466927 + 0.567891234
         u2 = u2_raw - _ops.floor(u2_raw)
 
+        if method_lower == "orthogonal":
+            u1_safe = _ops.clip(u1, 1e-7, 1.0 - 1e-7)
+            z_norm = _ops.sqrt(-2.0 * _ops.log(u1_safe)) * _ops.cos(2.0 * math.pi * u2)
+            rows = max(1, dims[0]) if len(dims) >= 1 else 1
+            cols = max(1, total_elems // rows)
+            raw_vals = [float(z_norm[i]) for i in range(total_elems)]
+            transpose_mat = rows < cols
+            m_rows = cols if transpose_mat else rows
+            m_cols = rows if transpose_mat else cols
+            basis: list[list[float]] = []
+            for c_idx in range(m_cols):
+                vec = [raw_vals[c_idx * m_rows + r_idx] for r_idx in range(m_rows)]
+                for prev in basis:
+                    dot_val = sum(v * p for v, p in zip(vec, prev))
+                    vec = [v - dot_val * p for v, p in zip(vec, prev)]
+                norm_val = max(math.sqrt(sum(v * v for v in vec)), 1e-12)
+                vec = [v / norm_val for v in vec]
+                basis.append(vec)
+            ortho_flat: list[float] = [
+                (basis[r_idx][c_idx] if transpose_mat else basis[c_idx][r_idx]) * self.scale
+                for r_idx in range(rows)
+                for c_idx in range(cols)
+            ]
+            return _ops.reshape(_ops.asarray(ortho_flat, dtype=compiler_dtype), dims)
+
         if method_lower in ("uniform", "glorot_uniform", "xavier_uniform", "kaiming_uniform"):
             denom = (
                 (fan_in + fan_out)
@@ -237,6 +273,30 @@ class DecoderHParams(BaseModel):
     max_decode_steps: int | None = None
 
 
+def _deep_clone_param(val: ConfigParamValue) -> ConfigParamValue:
+    """Recursively deep-clone a `ConfigParamValue` container or model.
+
+    Args:
+        val: Configuration parameter value to clone.
+
+    Returns:
+        Deep-cloned configuration parameter value.
+    """
+    if isinstance(val, PaxConfig):
+        return val.clone()
+    if isinstance(val, Tensor):
+        return val.copy()
+    if isinstance(val, BaseModel):
+        return val.model_copy(deep=True)
+    if isinstance(val, list):
+        return list(val)
+    if isinstance(val, tuple):
+        return tuple(val)
+    if isinstance(val, dict):
+        return dict(val)
+    return val
+
+
 class PaxConfig(BaseModel, Generic[T_co]):
     """Generic configuration container emulating `pax_fiddle.Config`.
 
@@ -263,12 +323,15 @@ class PaxConfig(BaseModel, Generic[T_co]):
         return self
 
     def clone(self) -> PaxConfig[T_co]:
-        """Return a shallow copy of this `PaxConfig` template.
+        """Return an isolated deep copy of this `PaxConfig` template.
 
         Returns:
-            Cloned `PaxConfig` instance with copied `params`.
+            Cloned `PaxConfig` instance with recursively copied `params`.
         """
-        return PaxConfig(cls=self.cls, params=dict(self.params))
+        cloned_params: dict[str, ConfigParamValue] = {
+            k: _deep_clone_param(v) for k, v in self.params.items()
+        }
+        return PaxConfig(cls=self.cls, params=cloned_params)
 
     def instantiate(self) -> T_co:
         """Instantiate the configured `cls` with `self.params`.
@@ -293,6 +356,7 @@ __all__ = [
     "ConfigParamValue",
     "DType",
     "DecoderHParams",
+    "LayerOutput",
     "PaddingTuple",
     "PaxConfig",
     "PoolingOutput",

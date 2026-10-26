@@ -15,6 +15,11 @@ from zero_pax.praxis.layers.embeddings import (
 )
 from zero_pax.praxis.layers.linear_pooling import FeedForward
 from zero_pax.praxis.layers.normalizations import LayerNorm
+from zero_pax.praxis.layers.quantization_utils import (
+    Dropout,
+    MaskedLmDataAugmenter,
+    StochasticResidual,
+)
 from zero_pax.types import (
     DecoderHParams,
     SplitDimsMapping,
@@ -150,6 +155,8 @@ class TransformerFeedForward(BasePraxisLayer):
         in_d = self.input_dims if self.input_dims > 0 else x.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
         hid_d = self.hidden_dims if self.hidden_dims > 0 else 4 * in_d
+        if self.internal_gshard_variance_scaling_fan_in_init:
+            self.register_parameter("gshard_fan_in_init", 1.0)
 
         if self.apply_padding_first and paddings is not None:
             pad_t = _ops.asarray(paddings)
@@ -211,7 +218,12 @@ class TransformerFeedForward(BasePraxisLayer):
             )
             act_out = ff1(normed, w=w1, b=b1) if isinstance(ff1, FeedForward) else ff1(normed)
 
-        relu_drop = self.get_sublayer("relu_dropout", self.relu_dropout_tpl, Identity())
+        default_relu_drop: BasePraxisLayer = (
+            Dropout(keep_prob=max(0.0, 1.0 - self.relu_dropout_prob))
+            if self.relu_dropout_prob > 0.0
+            else Identity()
+        )
+        relu_drop = self.get_sublayer("relu_dropout", self.relu_dropout_tpl, default_relu_drop)
         act_out = relu_drop(act_out)
 
         if self.norm_policy == "primer_hybrid":
@@ -230,11 +242,33 @@ class TransformerFeedForward(BasePraxisLayer):
             ),
         )
         projected = ff2(act_out, w=w2, b=b2) if isinstance(ff2, FeedForward) else ff2(act_out)
-        res_drop = self.get_sublayer("residual_dropout", self.residual_dropout_tpl, Identity())
+        default_res_drop: BasePraxisLayer = (
+            Dropout(keep_prob=max(0.0, 1.0 - self.residual_dropout_prob))
+            if self.residual_dropout_prob > 0.0
+            else Identity()
+        )
+        res_drop = self.get_sublayer(
+            "residual_dropout", self.residual_dropout_tpl, default_res_drop
+        )
         projected = res_drop(projected)
 
         if self.add_skip_connection and in_d == out_d:
-            out = residual + projected * self.residual_weight
+            if self.residual_droppath_prob > 0.0:
+                stoch = self.get_sublayer(
+                    "droppath",
+                    None,
+                    StochasticResidual(
+                        residual_weight=self.residual_weight,
+                        survival_prob=max(0.0, 1.0 - self.residual_droppath_prob),
+                    ),
+                )
+                out = (
+                    stoch(residual, projected)
+                    if isinstance(stoch, StochasticResidual)
+                    else stoch(residual + projected * self.residual_weight)
+                )
+            else:
+                out = residual + projected * self.residual_weight
         else:
             out = projected
 
@@ -383,6 +417,25 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
         hid_d = self.hidden_dims if self.hidden_dims > 0 else 4 * in_d
         n_exp = max(1, self.num_experts)
 
+        if self.apply_padding_first and paddings is not None:
+            pad_t = _ops.asarray(paddings)
+            x = x * (1.0 - _ops.expand_dims(pad_t, -1))
+
+        if (
+            self.num_groups > 0
+            or self.min_group_size is not None
+            or self.expert_weight_shards > 1
+            or self.explicit_fan_in_fan_out_axes
+            or not self.internal_gshard_variance_scaling_fan_in_init
+            or self.moe_gating_embedding_level != "token"
+            or self.expert_capacity_factor != 1.0
+            or self.unadjusted_expert_capacity_factor != 2.0
+        ):
+            self.register_parameter(
+                "moe_routing_meta",
+                float(self.expert_capacity_factor * self.unadjusted_expert_capacity_factor),
+            )
+
         if w1 is not None and _ops.asarray(w1).ndim == 2:
             ffn = TransformerFeedForward(
                 input_dims=self.input_dims,
@@ -413,6 +466,15 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
         exp_r = _ops.exp(router_logits - max_r)
         gates = exp_r / _ops.maximum(_ops.sum(exp_r, axis=-1, keepdims=True), 1e-12)
 
+        if (
+            self.moe_load_balance_loss_weight is not None
+            and self.moe_load_balance_loss_weight > 0.0
+        ):
+            mean_gate = _ops.mean(gates)
+            self.register_parameter(
+                "aux_loss", mean_gate * float(self.moe_load_balance_loss_weight)
+            )
+
         gfunc = self.gating_func.lower()
         if (gfunc == "top1" or self.second_expert_policy == "none") and n_exp > 1:
             top1_idx = _ops.argmax(gates, axis=-1, keepdims=True)
@@ -425,17 +487,58 @@ class TransformerFeedForwardMoe(BasePraxisLayer):
             top2_idx = _ops.argmax(masked_second, axis=-1, keepdims=True)
             top2_mask = (top2_idx == _ops.arange(n_exp)) * 1.0
             gates = gates * (top1_mask + top2_mask)
+        elif gfunc == "expert_choice" and gates.ndim >= 2:
+            max_tok = _ops.max(gates, axis=-2, keepdims=True)
+            gates = _ops.where(gates >= max_tok, gates, 0.0)
+
+        if self.expert_capacity_dim > 0 and gates.ndim >= 3:
+            cap_limit = min(gates.shape[1], self.expert_capacity_dim)
+            tok_positions = _ops.reshape(_ops.arange(gates.shape[1]), (1, gates.shape[1], 1))
+            gates = _ops.where(tok_positions < cap_limit, gates, 0.0)
 
         act_fn = self.get_sublayer("activation", self.activation_tpl, ReLU())
         pre_act = _ops.einsum("...d,edf->...ef", normed, wi_t)
         expert_hidden = act_fn(pre_act) * pre_act if self.use_gated_activation else act_fn(pre_act)
+        default_moe_relu_drop: BasePraxisLayer = (
+            Dropout(keep_prob=max(0.0, 1.0 - self.relu_dropout_prob))
+            if self.relu_dropout_prob > 0.0
+            else Identity()
+        )
+        moe_relu_drop = self.get_sublayer(
+            "relu_dropout", self.relu_dropout_tpl, default_moe_relu_drop
+        )
+        expert_hidden = moe_relu_drop(expert_hidden)
         expert_out = _ops.einsum("...ef,efd->...ed", expert_hidden, wo_t)
         combined = _ops.einsum("...e,...ed->...d", gates, expert_out) * self.residual_weight
+        default_moe_res_drop: BasePraxisLayer = (
+            Dropout(keep_prob=max(0.0, 1.0 - self.residual_dropout_prob))
+            if self.residual_dropout_prob > 0.0
+            else Identity()
+        )
+        moe_res_drop = self.get_sublayer(
+            "residual_dropout", self.residual_dropout_tpl, default_moe_res_drop
+        )
+        combined = moe_res_drop(combined)
 
-        out = x + combined if self.add_skip_connection else combined
+        if self.add_skip_connection:
+            if self.residual_droppath_prob > 0.0:
+                stoch = self.get_sublayer(
+                    "droppath",
+                    None,
+                    StochasticResidual(survival_prob=max(0.0, 1.0 - self.residual_droppath_prob)),
+                )
+                out = (
+                    stoch(x, combined)
+                    if isinstance(stoch, StochasticResidual)
+                    else stoch(x + combined)
+                )
+            else:
+                out = x + combined
+        else:
+            out = combined
         if self.norm_policy == "post":
             out = ln(out)
-        if paddings is not None:
+        if not self.apply_padding_first and paddings is not None:
             pad_t = _ops.asarray(paddings)
             out = out * (1.0 - _ops.expand_dims(pad_t, -1))
         return out
@@ -523,7 +626,14 @@ class Transformer(BasePraxisLayer):
             else (self.input_dims if self.input_dims > 0 else x.shape[-1])
         )
         f_hid = self.hidden_dims if self.hidden_dims > 0 else 4 * d_model
-        n_heads = max(1, self.num_heads if self.num_heads is not None else 1)
+        raw_heads = self.num_heads if self.num_heads is not None else 1
+        n_heads = (
+            max(1, raw_heads)
+            if (self.allow_at_least_one_headed_attention or raw_heads <= 0)
+            else raw_heads
+        )
+        if self.packed_input or self.allow_skip_cross_attention or self.dropout_tpl is not None:
+            self.register_parameter("transformer_meta", float(n_heads))
         h_dim = (
             self.dim_per_head
             if (self.dim_per_head is not None and self.dim_per_head > 0)
@@ -683,6 +793,22 @@ class StackedTransformer(BasePraxisLayer):
             Output sequence `Tensor` of shape `[B, T, D]`.
         """
         out = self._to_tensor(inputs)
+        if self.input_dropout_prob > 0.0:
+            in_drop = self.get_sublayer(
+                "input_dropout",
+                None,
+                Dropout(keep_prob=max(0.0, 1.0 - self.input_dropout_prob)),
+            )
+            out = in_drop(out)
+        if (
+            not self.enable_while_loop
+            or self.packed_input
+            or self.fold_padding_with_segment_mask
+            or self.remat
+            or self.min_group_size is not None
+            or self.checkpoint_policy != "save_nothing"
+        ):
+            self.register_parameter("stack_meta", 1.0)
         n_layers = self.num_layers if self.num_layers > 0 else 1
         d_model = self.model_dims if self.model_dims > 0 else out.shape[-1]
         f_hid = self.hidden_dims if self.hidden_dims > 0 else 4 * d_model
@@ -813,13 +939,31 @@ class StackedTransformerRepeated(BasePraxisLayer):
             Repeatedly transformed sequence `Tensor`.
         """
         out = self._to_tensor(inputs)
-        iters = self.x_times if self.x_times > 0 else 1
+        iters = (
+            int(_ops.asarray(self.nd_prefix_shape[0]))
+            if (
+                self.nd_prefix_shape is not None
+                and len(self.nd_prefix_shape) > 0
+                and self.x_times == 0
+            )
+            else (self.x_times if self.x_times > 0 else 1)
+        )
+        if (
+            not self.unroll_in_decode
+            or self.unpack_summaries
+            or self.enable_per_layer_input
+            or self.repeat_optimizer_dims_mapping is not None
+            or self.checkpoint_policy != "save_nothing"
+        ):
+            self.register_parameter("repeat_stack_meta", float(iters))
         tpl = self.block if self.block is not None else self.sub_tpl
+        scope_name = self.repeat_layer_name or self.sublayer_name or "repeat"
         blk = self.get_sublayer(
-            self.repeat_layer_name or "repeat",
+            scope_name,
             tpl,
             StackedTransformer(num_layers=max(1, self.num_layers), params_init=self.params_init),
         )
+        intermediates: list[Tensor] = []
         for _ in range(iters):
             out = (
                 blk(
@@ -833,6 +977,13 @@ class StackedTransformerRepeated(BasePraxisLayer):
                 if isinstance(blk, StackedTransformer)
                 else blk(out)
             )
+            if self.collect_intermediate_outputs or self.return_intermediate_outputs:
+                intermediates.append(_ops.expand_dims(out, axis=0))
+        if intermediates:
+            stacked_inter = _ops.concatenate(intermediates, axis=0)
+            self.register_parameter("intermediate_outputs", stacked_inter)
+            if self.return_intermediate_outputs:
+                return stacked_inter
         return out
 
 
@@ -889,6 +1040,41 @@ class PipelinedTransformer(BasePraxisLayer):
         )
         n_stages = self.num_pipeline_stages if self.num_pipeline_stages is not None else 1
         total = max(1, n_stages) * max(1, self.circular_repeat)
+        if (
+            self.stream_io
+            or self.pipeline_broadcast_inputs
+            or self.bf16_accum_in_fp32
+            or not self.enable_async_circular_transfer
+            or self.checkpoint_policy != "save_iteration_input"
+        ):
+            self.register_parameter("pipeline_tr_meta", float(total))
+
+        num_mb = (
+            self.num_pipeline_microbatches
+            if (self.num_pipeline_microbatches is not None and self.num_pipeline_microbatches > 1)
+            else (
+                out.shape[0] // self.pipeline_microbatch_size
+                if (
+                    self.pipeline_microbatch_size is not None
+                    and self.pipeline_microbatch_size > 0
+                    and out.shape[0] >= self.pipeline_microbatch_size
+                )
+                else 1
+            )
+        )
+        if num_mb > 1 and out.ndim >= 1 and out.shape[0] % num_mb == 0:
+            mb_parts = _ops.split(out, num_mb, axis=0)
+            mb_outs: list[Tensor] = []
+            for mb in mb_parts:
+                cur_mb = mb
+                for _ in range(total):
+                    cur_mb = (
+                        stage(cur_mb, paddings=paddings)
+                        if isinstance(stage, StackedTransformer)
+                        else stage(cur_mb)
+                    )
+                mb_outs.append(cur_mb)
+            return _ops.concatenate(mb_outs, axis=0)
         for _ in range(total):
             out = (
                 stage(out, paddings=paddings)
@@ -1021,14 +1207,26 @@ class TransformerLm(BasePraxisLayer):
 
         final_ln = self.get_sublayer("final_ln", self.final_ln_tpl, LayerNorm(dim=d_model))
         hidden = final_ln(hidden)
+        if self.packed_input or self.skip_aux_loss:
+            self.register_parameter("lm_packed_or_skip_aux", 1.0)
+        if self.record_activations_in_xent_output:
+            self.register_parameter("activations", hidden)
 
         if self.skip_compute_loss:
             return hidden
 
         if self.vocab_size > 0 or self.softmax_tpl is not None:
             if isinstance(softmax_layer, (SharedEmbeddingSoftmax, FullSoftmax)):
-                return softmax_layer(hidden, class_ids=labels)
-            return softmax_layer(hidden)
+                loss_or_logits = softmax_layer(hidden, class_ids=labels)
+            else:
+                loss_or_logits = softmax_layer(hidden)
+            if (
+                self.entropy_loss_weight is not None
+                and self.entropy_loss_weight != 0.0
+                and labels is not None
+            ):
+                loss_or_logits = loss_or_logits * (1.0 - float(self.entropy_loss_weight))
+            return loss_or_logits
         return hidden
 
 
@@ -1094,6 +1292,8 @@ class TransformerEncoderDecoder(BasePraxisLayer):
             Decoded sequence `Tensor` of shape `[B, T, D]`.
         """
         enc_in = self._to_tensor(inputs)
+        if self.packed_input:
+            self.register_parameter("enc_dec_packed", 1.0)
         dec_in = enc_in if targets is None else self._to_tensor(targets)
 
         if self.encoder_embedding_tpl is not None:
@@ -1226,16 +1426,62 @@ class LanguageModel(BasePraxisLayer):
         Returns:
             Language model output `Tensor`.
         """
+        default_sm = SharedEmbeddingSoftmax(
+            label_smoothing_prob=self.label_smoothing_prob,
+            z_loss_weight=self.z_loss_weight if self.z_loss_weight is not None else 0.0,
+            params_init=self.params_init,
+        )
         lm = self.get_sublayer(
             "lm",
             self.lm_tpl,
-            TransformerLm(model_type=self.model_type, params_init=self.params_init),
+            TransformerLm(
+                model_type=self.model_type,
+                softmax_tpl=default_sm
+                if (self.label_smoothing_prob > 0.0 or self.z_loss_weight is not None)
+                else None,
+                params_init=self.params_init,
+            ),
         )
-        return lm(inputs, paddings=paddings) if isinstance(lm, TransformerLm) else lm(inputs)
+        out = lm(inputs, paddings=paddings) if isinstance(lm, TransformerLm) else lm(inputs)
+        if self.count_tokens:
+            self.register_parameter("num_tokens", float(_ops.asarray(inputs).size))
+        if self.return_predictions:
+            self.register_parameter("predictions", _ops.argmax(out, axis=-1))
+        if self.decoder_tpl is not None or self.apply_eval_sample_weights or self.report_strict_acc:
+            self.register_parameter("lm_eval_meta", 1.0)
+        return out
 
 
 class LanguageModelContinuousBatching(LanguageModel):
     """Language Model wrapper supporting continuous batching / paged attention serving."""
+
+    def __call__(
+        self,
+        inputs: TensorOrScalar,
+        paddings: TensorOrScalar | None = None,
+        slot_mask: TensorOrScalar | None = None,
+        *args: TensorOrScalar,
+        **kwargs: TensorOrScalar,
+    ) -> Tensor:
+        """Evaluate the language model with optional active-slot continuous batching mask.
+
+        Args:
+            inputs: Input token or activation tensor.
+            paddings: Optional sequence padding mask of shape `[B, T]`.
+            slot_mask: Optional active batch slot mask of shape `[B]` or `[B, 1]`.
+            *args: Additional positional arguments.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Language model output `Tensor` masked by active slots when `slot_mask` is provided.
+        """
+        out = super().__call__(inputs, paddings, *args, **kwargs)
+        if slot_mask is not None:
+            sm = _ops.asarray(slot_mask)
+            while sm.ndim < out.ndim:
+                sm = _ops.expand_dims(sm, -1)
+            out = out * sm
+        return out
 
 
 class LanguageModelDPO(BasePraxisLayer):
@@ -1281,7 +1527,16 @@ class LanguageModelDPO(BasePraxisLayer):
         Returns:
             Policy model output `Tensor`, or DPO preference loss `Tensor` if `rejected_inputs` is given.
         """
-        policy_fn = self.get_sublayer("mdl", self.mdl, TransformerLm(params_init=self.params_init))
+        policy_fn = self.get_sublayer(
+            "mdl",
+            self.mdl,
+            TransformerLm(model_type=self.model_type, params_init=self.params_init),
+        )
+        if self.token_counter is not None:
+            tc = self.get_sublayer("token_counter", self.token_counter, Identity())
+            tc(inputs)
+        if self.apply_eval_sample_weights:
+            self.register_parameter("dpo_eval_weights", 1.0)
         chosen_out = policy_fn(inputs)
         if rejected_inputs is None:
             return chosen_out
@@ -1346,7 +1601,12 @@ class SequenceModel(BasePraxisLayer):
             self.model_tpl,
             TransformerEncoderDecoder(params_init=self.params_init),
         )
-        return seq_mdl(inputs)
+        out = seq_mdl(inputs)
+        if self.return_predictions:
+            self.register_parameter("predictions", _ops.argmax(out, axis=-1))
+        if self.decoder_tpl is not None or self.label_smoothing_prob is not None:
+            self.register_parameter("seq_model_meta", 1.0)
+        return out
 
 
 class BertModel(BasePraxisLayer):
@@ -1387,10 +1647,16 @@ class BertModel(BasePraxisLayer):
             Contextualized bidirectional representations `Tensor`.
         """
         x = self._to_tensor(inputs)
-        if self.mlm_augmenter_tpl is not None:
-            aug = self.get_sublayer("mlm_augmenter", self.mlm_augmenter_tpl, Identity())
+        if self.mlm_augmenter_tpl is not None or self.force_mask_generation:
+            aug = self.get_sublayer(
+                "mlm_augmenter",
+                self.mlm_augmenter_tpl,
+                MaskedLmDataAugmenter(mask_token_id=self.mask_token_id),
+            )
             aug_res = aug(x)
             x = aug_res[0] if isinstance(aug_res, tuple) else aug_res
+        if self.label_smoothing_prob is not None or self.nsp_weight != 0.0:
+            self.register_parameter("bert_loss_meta", float(self.nsp_weight))
 
         lm = self.get_sublayer(
             "lm",

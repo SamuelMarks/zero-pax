@@ -173,11 +173,21 @@ class Linear(BasePraxisLayer):
 
         Returns:
             Projected `Tensor` of shape `[..., output_dims]`.
+
+        Raises:
+            ValueError: If `self.input_dims > 0` and `inputs.shape[-1]` does not match, or if
+                explicit `w` has a mismatched input dimension.
         """
         x = self._to_tensor(inputs)
+        if self.input_dims > 0 and x.shape[-1] != self.input_dims:
+            raise ValueError(f"Linear expected last dimension {self.input_dims}, got {x.shape[-1]}")
         in_d = self.input_dims if self.input_dims > 0 else x.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
         w_t = self.get_variable("w", (in_d, out_d), explicit=w, init=self.weight_init)
+        if w_t.ndim != 2 or w_t.shape[0] != in_d:
+            raise ValueError(
+                f"Linear weight input dimension {w_t.shape} does not match input feature dimension {in_d}"
+            )
         op_layer = self.get_sublayer("einsum", self.einsum_tpl, EinsumOp(equation="...d,df->...f"))
         return (
             op_layer("...d,df->...f", x, w_t)
@@ -299,6 +309,8 @@ class FeedForward(BasePraxisLayer):
 
         drop_layer = self.get_sublayer("dropout", self.dropout_tpl, Identity())
         out = drop_layer(out)
+        if self.checkpoint_str:
+            self.register_parameter("checkpoint_policy", 1.0)
 
         return out
 
@@ -359,8 +371,9 @@ class MLPBlock(BasePraxisLayer):
             act_for_layer: LayerTpl = (
                 Identity() if (is_last and not self.activate_final) else self.activation_tpl
             )
+            in_d = out.shape[-1]
             default_ff = FeedForward(
-                input_dims=out.shape[-1],
+                input_dims=in_d,
                 output_dims=feat_dim,
                 has_bias=self.has_bias,
                 activation_tpl=act_for_layer,
@@ -368,7 +381,17 @@ class MLPBlock(BasePraxisLayer):
                 params_init=self.params_init,
             )
             ff = instantiate_layer(tpl_to_use, default_ff, parent=self, name=f"ff_{idx}")
-            out = ff(out, w=w, b=b) if isinstance(ff, FeedForward) else ff(out)
+            w_layer = (
+                w
+                if (w is not None and (idx == 0 or _ops.asarray(w).shape == (in_d, feat_dim)))
+                else None
+            )
+            b_layer = (
+                b
+                if (b is not None and (idx == 0 or _ops.asarray(b).shape == (feat_dim,)))
+                else None
+            )
+            out = ff(out, w=w_layer, b=b_layer) if isinstance(ff, FeedForward) else ff(out)
         return out
 
 
@@ -578,7 +601,13 @@ class Pooling1D(BasePraxisLayer):
 
         Returns:
             Pooled 3D `Tensor`, or `(pooled_tensor, out_paddings)` if `paddings` is provided.
+
+        Raises:
+            ValueError: If `pooling_type` is not `'MAX'` or `'AVG'`.
         """
+        pool_mode = self.pooling_type.upper()
+        if pool_mode not in ("MAX", "AVG"):
+            raise ValueError(f"pooling_type must be MAX or AVG, got {self.pooling_type}")
         x = self._to_tensor(inputs)
         win = self.window if self.window > 0 else 1
         if win == 1 and self.stride == 1:

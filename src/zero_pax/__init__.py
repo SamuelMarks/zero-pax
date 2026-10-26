@@ -141,6 +141,31 @@ def __call__(
     return None
 
 
+def _collect_layer_params(
+    layer: BasePraxisLayer,
+    prefix: str = "",
+) -> dict[str, Tensor]:
+    """Recursively collect parameters from `layer` and its `sublayers`.
+
+    Args:
+        layer: Layer instance to inspect.
+        prefix: Hierarchical scope prefix for nested sublayers.
+
+    Returns:
+        Dictionary mapping scoped parameter names to `Tensor` values.
+    """
+    layer.setup()
+    collected: dict[str, Tensor] = {
+        f"{prefix}{name}": _ops.asarray(param()) for name, param in layer.params.items()
+    }
+    for sub_name, sub_layer in layer.sublayers.items():
+        if isinstance(sub_layer, BasePraxisLayer):
+            sub_prefix = f"{prefix}{sub_name}/"
+            for k, v in _collect_layer_params(sub_layer, prefix=sub_prefix).items():
+                collected.setdefault(k, v)
+    return collected
+
+
 def init_weights(
     layer: BasePraxisLayer | None = None,
     *args: TensorOrScalar,
@@ -157,8 +182,7 @@ def init_weights(
         Dictionary mapping parameter names to `Tensor` objects.
     """
     if layer is not None:
-        layer.setup()
-        return {name: _ops.asarray(param()) for name, param in layer.params.items()}
+        return _collect_layer_params(layer)
     return {}
 
 

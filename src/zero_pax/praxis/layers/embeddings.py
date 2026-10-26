@@ -46,16 +46,29 @@ class Embedding(BasePraxisLayer):
             Embedded `Tensor` of shape `[..., input_dims]`.
 
         Raises:
-            ValueError: If `self.lookup_style` is not `'INDEX'` or `'MATMUL'`.
+            ValueError: If `self.lookup_style` is not `'INDEX'` or `'MATMUL'`, or if an explicit
+                `w` has incompatible vocabulary dimension when `num_classes > 0`.
         """
         style = self.lookup_style.upper()
         if style not in ("INDEX", "MATMUL"):
             raise ValueError(f"lookup_style must be INDEX or MATMUL, got {self.lookup_style!r}")
 
         ids_t = _ops.asarray(ids)
-        v_sz = self.num_classes if self.num_classes > 0 else 10
-        d_sz = self.input_dims if self.input_dims > 0 else 8
+        v_sz = (
+            self.num_classes
+            if self.num_classes > 0
+            else (_ops.asarray(w).shape[0] if w is not None else 10)
+        )
+        d_sz = (
+            self.input_dims
+            if self.input_dims > 0
+            else (_ops.asarray(w).shape[-1] if w is not None else 8)
+        )
         w_t = self.get_variable("w", (v_sz, d_sz), explicit=w)
+        if w_t.ndim != 2 or w_t.shape[0] != v_sz:
+            raise ValueError(
+                f"Embedding weight shape {w_t.shape} does not match vocabulary size {v_sz}"
+            )
 
         oob_mask = (ids_t < 0) | (ids_t >= v_sz)
         valid_ids = _ops.where(oob_mask, 0, ids_t)
@@ -262,13 +275,16 @@ class SharedEmbeddingSoftmax(BasePraxisLayer):
                 num_classes=v_sz,
                 bi_tempered_loss_tpl=self.bi_tempered_loss_tpl,
                 label_smoothing_prob=self.label_smoothing_prob,
+                label_smoothing_apply_for_eval=self.label_smoothing_apply_for_eval,
                 z_loss_weight=self.z_loss_weight,
+                chunk_size=self.chunk_size,
             )
             return softmax(
                 logits,
                 class_weights=class_weights,
                 class_ids=class_ids,
                 class_probabilities=class_probabilities,
+                **kwargs,
             )
 
         return logits
@@ -369,12 +385,16 @@ class GShardSharedEmbeddingSoftmax(BasePraxisLayer):
                 label_smoothing_prob=self.label_smoothing_prob,
                 z_loss_weight=self.z_loss_weight,
             )
-            return softmax(
+            loss_out = softmax(
                 logits,
                 class_weights=class_weights,
                 class_ids=class_ids,
                 class_probabilities=class_probabilities,
             )
+            if not self.use_tgt_labels_size_as_loss_denominator and class_weights is not None:
+                cw_sum = _ops.maximum(_ops.sum(class_weights), 1e-12)
+                loss_out = loss_out / cw_sum
+            return loss_out
         return logits
 
 
@@ -498,11 +518,16 @@ class PositionalEmbedding2D(BasePraxisLayer):
 
         h_grid = _ops.broadcast_to(_ops.expand_dims(h_pos, 1), (h_sz, w_sz, h_pos.shape[-1]))
         w_grid = _ops.broadcast_to(_ops.expand_dims(w_pos, 0), (h_sz, w_sz, w_pos.shape[-1]))
-        if self.pos_transform == "w_h":
+        norm_transform = self.pos_transform.strip().lower()
+        if norm_transform in ("w_h", "hwd->(wh)d"):
             emb_2d = _ops.concatenate([w_grid, h_grid], axis=-1)
+            if norm_transform == "hwd->(wh)d":
+                emb_2d = _ops.transpose(emb_2d, (1, 0, 2))
         else:
             emb_2d = _ops.concatenate([h_grid, w_grid], axis=-1)
 
+        if norm_transform == "hwd->hwd":
+            return _ops.expand_dims(emb_2d[:, :, :d_emb], 0)
         emb_flat = _ops.reshape(emb_2d, (1, h_sz * w_sz, emb_2d.shape[-1]))
         if emb_flat.shape[-1] < d_emb:
             emb_flat = _ops.pad(
@@ -604,6 +629,15 @@ class TrainablePositionalEmbedding(PositionalEmbedding):
             _ops.reshape(clipped_pos, list(clipped_pos.shape) + [1]) == _ops.arange(max_len)
         ) * 1.0
         if self.lookup_style.upper() == "INDEX":
+            if self.array_lookup_tpl is not None:
+                lookup_layer = self.get_sublayer(
+                    "array_lookup", self.array_lookup_tpl, EinsumOp(equation="btv,vd->btd")
+                )
+                return (
+                    lookup_layer("btv,vd->btd", one_hot, w_t)
+                    if isinstance(lookup_layer, EinsumOp)
+                    else lookup_layer(clipped_pos)
+                )
             flat_one_hot = _ops.reshape(one_hot, (-1, max_len))
             flat_embs = _ops.matmul(flat_one_hot, w_t)
             return _ops.reshape(flat_embs, list(clipped_pos.shape) + [d_emb])
@@ -718,11 +752,28 @@ class FullSoftmax(BasePraxisLayer):
         if self.soft_cap_logits is not None and self.soft_cap_logits > 0.0:
             logits = self.soft_cap_logits * _ops.tanh(logits / self.soft_cap_logits)
 
-        max_logits = _ops.max(logits, axis=-1, keepdims=True)
-        shifted = logits - max_logits
-        exp_x = _ops.exp(shifted)
-        sum_exp = _ops.sum(exp_x, axis=-1, keepdims=True)
-        probs = exp_x / sum_exp
+        if (
+            self.chunk_size is not None
+            and self.chunk_size > 0
+            and logits.shape[0] > self.chunk_size
+        ):
+            chunks: list[Tensor] = []
+            for start in range(0, logits.shape[0], self.chunk_size):
+                end = min(logits.shape[0], start + self.chunk_size)
+                sub_logits = logits[start:end]
+                sub_max = _ops.max(sub_logits, axis=-1, keepdims=True)
+                sub_exp = _ops.exp(sub_logits - sub_max)
+                chunks.append(sub_exp / _ops.sum(sub_exp, axis=-1, keepdims=True))
+            probs = _ops.concatenate(chunks, axis=0)
+            max_logits = _ops.max(logits, axis=-1, keepdims=True)
+            shifted = logits - max_logits
+            sum_exp = _ops.sum(_ops.exp(shifted), axis=-1, keepdims=True)
+        else:
+            max_logits = _ops.max(logits, axis=-1, keepdims=True)
+            shifted = logits - max_logits
+            exp_x = _ops.exp(shifted)
+            sum_exp = _ops.sum(exp_x, axis=-1, keepdims=True)
+            probs = exp_x / sum_exp
 
         if class_ids is not None or class_probabilities is not None:
             num_c = logits.shape[-1]
@@ -748,7 +799,11 @@ class FullSoftmax(BasePraxisLayer):
             else:
                 log_z = _ops.log(sum_exp)
                 log_probs = shifted - log_z
-                if self.label_smoothing_prob > 0.0:
+                is_eval_flag = bool(kwargs.get("is_eval", False))
+                apply_smooth = self.label_smoothing_prob > 0.0 and (
+                    self.label_smoothing_apply_for_eval or not is_eval_flag
+                )
+                if apply_smooth:
                     off_val = self.label_smoothing_prob / float(num_c)
                     on_val = 1.0 - self.label_smoothing_prob + off_val
                     targets = targets * (on_val - off_val) + off_val
@@ -911,26 +966,46 @@ class BiTemperedLoss(BasePraxisLayer):
             return _ops.exp(u)
         return _ops.maximum(0.0, 1.0 + (1.0 - t) * u) ** (1.0 / (1.0 - t))
 
-    def _compute_normalization(self, activations: Tensor) -> Tensor:
+    def _resolve_temperatures(self, step: TensorOrScalar | None = None) -> tuple[float, float]:
+        """Resolve `(t1, t2)` at training `step` using `[start_step, end_step]` interpolation.
+
+        Args:
+            step: Optional current training step scalar or tensor.
+
+        Returns:
+            Pair `(eff_t1, eff_t2)` of effective temperatures.
+        """
+        if step is None or self.end_step <= self.start_step:
+            return self.t1, self.t2
+        step_val = float(_ops.asarray(step))
+        alpha = min(
+            1.0,
+            max(0.0, (step_val - float(self.start_step)) / float(self.end_step - self.start_step)),
+        )
+        return 1.0 + alpha * (self.t1 - 1.0), 1.0 + alpha * (self.t2 - 1.0)
+
+    def _compute_normalization(self, activations: Tensor, eff_t2: float | None = None) -> Tensor:
         """Compute the normalization constant `z_tilde` for tempered softmax with `t2`.
 
         Args:
             activations: Logit activations tensor of shape `[..., C]`.
+            eff_t2: Optional effective `t2` temperature override.
 
         Returns:
             Normalization tensor `z_tilde` of shape `[..., 1]`.
         """
+        t2_val = self.t2 if eff_t2 is None else eff_t2
         mu = _ops.max(activations, axis=-1, keepdims=True)
-        if abs(self.t2 - 1.0) < 1e-7:
+        if abs(t2_val - 1.0) < 1e-7:
             return mu + _ops.log(_ops.sum(_ops.exp(activations - mu), axis=-1, keepdims=True))
 
         normalized_act_step_0 = activations - mu
         normalized_act = normalized_act_step_0
         for _ in range(max(1, self.num_iters)):
-            logt_partition = _ops.sum(self._exp_t(normalized_act, self.t2), axis=-1, keepdims=True)
-            normalized_act = normalized_act_step_0 * (logt_partition ** (1.0 - self.t2))
-        logt_partition = _ops.sum(self._exp_t(normalized_act, self.t2), axis=-1, keepdims=True)
-        return mu + self._log_t(1.0 / logt_partition, self.t2)
+            logt_partition = _ops.sum(self._exp_t(normalized_act, t2_val), axis=-1, keepdims=True)
+            normalized_act = normalized_act_step_0 * (logt_partition ** (1.0 - t2_val))
+        logt_partition = _ops.sum(self._exp_t(normalized_act, t2_val), axis=-1, keepdims=True)
+        return mu + self._log_t(1.0 / logt_partition, t2_val)
 
     def __call__(
         self,
@@ -945,14 +1020,15 @@ class BiTemperedLoss(BasePraxisLayer):
             inputs: Logits tensor of shape `[..., C]`.
             labels: Optional target probability or one-hot tensor of shape `[..., C]`.
             *args: Additional positional arguments.
-            **kwargs: Additional keyword arguments.
+            **kwargs: Additional keyword arguments (including optional `'step'`).
 
         Returns:
             Tempered probabilities if `labels` is None, or Bregman divergence loss `Tensor`.
         """
         logits = self._to_tensor(inputs)
-        norm_const = self._compute_normalization(logits)
-        probabilities = self._exp_t(logits - norm_const, self.t2)
+        eff_t1, eff_t2 = self._resolve_temperatures(kwargs.get("step"))
+        norm_const = self._compute_normalization(logits, eff_t2=eff_t2)
+        probabilities = self._exp_t(logits - norm_const, eff_t2)
         probabilities = probabilities / _ops.maximum(
             _ops.sum(probabilities, axis=-1, keepdims=True), 1e-12
         )
@@ -965,9 +1041,9 @@ class BiTemperedLoss(BasePraxisLayer):
             num_classes = float(logits.shape[-1])
             y = y * (1.0 - self.label_smoothing) + self.label_smoothing / num_classes
 
-        temp1 = y * (self._log_t(y, self.t1) - self._log_t(probabilities, self.t1)) - (
-            y ** (2.0 - self.t1) - probabilities ** (2.0 - self.t1)
-        ) / (2.0 - self.t1)
+        temp1 = y * (self._log_t(y, eff_t1) - self._log_t(probabilities, eff_t1)) - (
+            y ** (2.0 - eff_t1) - probabilities ** (2.0 - eff_t1)
+        ) / (2.0 - eff_t1)
         return _ops.sum(temp1, axis=-1)
 
 

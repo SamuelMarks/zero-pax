@@ -237,10 +237,12 @@ class GroupNorm(BaseNormalization):
             Normalized `Tensor` of the same shape as `inputs`.
 
         Raises:
-            ValueError: If `self.dim > 0` and does not match the input channel dimension.
+            ValueError: If `self.dim > 0` and does not match the input channel dimension, or if `self.input_rank` is set and does not match `inputs.ndim`.
         """
         x = self._to_tensor(inputs)
         orig_shape = x.shape
+        if self.input_rank is not None and len(orig_shape) != self.input_rank:
+            raise ValueError(f"Expected input rank {self.input_rank}, got {len(orig_shape)}.")
         channels = orig_shape[-1]
         if self.dim > 0 and channels != self.dim:
             raise ValueError(f"Expected input channel dimension {self.dim}, got {channels}")
@@ -384,7 +386,7 @@ class LayerNorm(BaseNormalization):
             bias_t = self.get_variable("bias", (feat_dim,), explicit=bias)
             normed = normed + bias_t
 
-        return normed
+        return normed.astype(self.effective_fprop_dtype)
 
 
 class RmsNorm(BaseNormalization):
@@ -432,7 +434,7 @@ class RmsNorm(BaseNormalization):
         var_t = _ops.mean(_ops.square(x), axis=-1, keepdims=True)
         normed = x / _ops.sqrt(var_t + self.epsilon)
         mult = scale_t if self.direct_scale else 1.0 + scale_t
-        return normed * mult
+        return (normed * mult).astype(self.effective_fprop_dtype)
 
 
 class RmsNormNoScale(BaseNormalization):

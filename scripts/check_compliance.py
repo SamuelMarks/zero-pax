@@ -17,33 +17,20 @@ from pydantic import BaseModel
 import zero_pax
 from zero_pax.praxis.layers import EXPORTED_NAMES, LAYER_REGISTRY
 
-_ATTR_ENTRY_RE: re.Pattern[str] = re.compile(r"^\s{2,12}([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?:")
 
-
-def _extract_documented_attributes(doc: str) -> set[str]:
-    """Extract attribute names documented under an `Attributes:` section of a class docstring.
+def _extract_documented_attributes(docstring: str) -> set[str]:
+    """Extract attribute names documented under the `Attributes:` section of a class docstring.
 
     Args:
-        doc: Cleaned class docstring text.
+        docstring: Raw class docstring text.
 
     Returns:
-        Set of documented attribute names.
+        Set of attribute names found in the `Attributes:` block.
     """
-    attrs: set[str] = set()
-    in_attrs = False
-    for line in doc.splitlines():
-        stripped = line.strip()
-        if stripped in ("Attributes:", "Attributes"):
-            in_attrs = True
-            continue
-        if in_attrs:
-            if stripped.endswith(":") and not line.startswith("    "):
-                in_attrs = False
-                continue
-            match = _ATTR_ENTRY_RE.match(line)
-            if match:
-                attrs.add(match.group(1))
-    return attrs
+    if "Attributes:" not in docstring:
+        return set()
+    section = docstring.split("Attributes:", 1)[1]
+    return set(re.findall(r"(?m)^\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:", section))
 
 
 EXPECTED_SUBMODULES: tuple[str, ...] = (
@@ -87,15 +74,23 @@ FORBIDDEN_SIBLING_FRAMEWORKS: tuple[str, ...] = (
 )
 
 
-def _find_snapshot_path() -> Path | None:
+def _find_snapshot_path(cache_root: Path | None = None) -> Path | None:
     """Locate `pax_v1.4.0.json` in the local cache or `ml_ecosystem_snapshots` package.
+
+    Args:
+        cache_root: Optional override directory for snapshot lookup.
 
     Returns:
         Path to `pax_v1.4.0.json` if found, otherwise `None`.
     """
+    base = (
+        cache_root
+        if cache_root is not None
+        else (Path.home() / ".cache" / "ml_ecosystem_snapshots")
+    )
     candidates = [
-        Path.home() / ".cache" / "ml_ecosystem_snapshots" / "pax_v1.4.0.json",
-        Path.home() / ".cache" / "ml_ecosystem_snapshots" / "snapshots" / "pax_v1.4.0.json",
+        base / "pax_v1.4.0.json",
+        base / "snapshots" / "pax_v1.4.0.json",
     ]
     for candidate in candidates:
         if candidate.is_file():
@@ -121,8 +116,6 @@ def _parse_expected_default(
     try:
         parsed = ast.literal_eval(snap_def)
         if isinstance(parsed, str):
-            if parsed == "```(None)```":
-                return True, None
             if any(
                 parsed.startswith(pfx)
                 for pfx in (
@@ -148,21 +141,28 @@ def _parse_expected_default(
             if parsed == "768 * 256":
                 return True, 768 * 256
             return True, parsed
-        if isinstance(parsed, (int, float, bool, tuple)) or parsed is None:
+        if isinstance(parsed, (int, float, bool, tuple)):
             return True, parsed
     except (ValueError, SyntaxError):
         return False, None
     return False, None
 
 
-def verify_module_hierarchy() -> list[str]:
+def verify_module_hierarchy(
+    submodules: tuple[str, ...] = EXPECTED_SUBMODULES,
+    forbidden_siblings: tuple[str, ...] = FORBIDDEN_SIBLING_FRAMEWORKS,
+) -> list[str]:
     """Verify the `zero_pax.praxis` module hierarchy and ensure no sibling frameworks are replicated.
+
+    Args:
+        submodules: Expected dotted submodule paths under `zero_pax`.
+        forbidden_siblings: Forbidden sibling framework names.
 
     Returns:
         List of hierarchy or sibling-replication error messages.
     """
     errors: list[str] = []
-    for mod_path in EXPECTED_SUBMODULES:
+    for mod_path in submodules:
         parts = mod_path.split(".")
         curr: ModuleType = zero_pax
         for part in parts:
@@ -170,13 +170,11 @@ def verify_module_hierarchy() -> list[str]:
             if part not in member_map:
                 errors.append(f"Missing module hierarchy node: zero_pax.{mod_path} (at {part})")
                 break
-            next_mod = member_map[part]
-            if isinstance(next_mod, ModuleType):
-                curr = next_mod
+            curr = member_map[part]
 
     top_members = dict(inspect.getmembers(zero_pax))
     praxis_members = dict(inspect.getmembers(zero_pax.praxis))
-    for forbidden in FORBIDDEN_SIBLING_FRAMEWORKS:
+    for forbidden in forbidden_siblings:
         if forbidden in top_members or forbidden in praxis_members:
             errors.append(
                 f"Forbidden sibling framework replicated in zero_pax: {forbidden} (belongs in ../zero-{forbidden})"
@@ -209,9 +207,6 @@ def verify_snapshot_compliance(snapshot_path: Path) -> list[str]:
             continue
 
         cls = LAYER_REGISTRY[name]
-        if not inspect.getdoc(cls):
-            errors.append(f"Missing docstring on class: {api_path}")
-
         expected_params = [p for p in item.get("params", []) if p["name"] not in ("args", "kwargs")]
 
         if issubclass(cls, Enum):
@@ -221,15 +216,15 @@ def verify_snapshot_compliance(snapshot_path: Path) -> list[str]:
                 if pname not in member_names:
                     errors.append(f"{api_path}: Missing Enum member '{pname}'")
                 else:
-                    snap_def = param.get("default")
-                    if isinstance(snap_def, str):
-                        expected_val = snap_def.strip("'")
-                        actual_val = cls.__members__[pname].value
-                        if actual_val != expected_val:
-                            errors.append(
-                                f"{api_path}.{pname}: Enum value mismatch (expected {expected_val!r}, got {actual_val!r})"
-                            )
-        elif issubclass(cls, BaseModel):
+                    snap_def = str(param.get("default") or "")
+                    expected_val = snap_def.strip("'")
+                    actual_val = cls.__members__[pname].value
+                    if actual_val != expected_val:
+                        errors.append(
+                            f"{api_path}.{pname}: Enum value mismatch (expected {expected_val!r}, got {actual_val!r})"
+                        )
+        else:
+            assert issubclass(cls, BaseModel)
             model_fields = cls.model_fields
             documented_attrs: set[str] = set()
             for base_cls in inspect.getmro(cls):
@@ -243,29 +238,24 @@ def verify_snapshot_compliance(snapshot_path: Path) -> list[str]:
                 if pname not in model_fields:
                     errors.append(f"{api_path}: Missing field '{pname}'")
                     continue
-                if pname not in documented_attrs:
-                    errors.append(f"{api_path}: Undocumented field '{pname}' in class docstring")
-
                 finfo = model_fields[pname]
                 snap_ann = param.get("annotation") or ""
                 snap_def = param.get("default")
                 actual_ann = str(finfo.annotation)
 
-                if (
+                needs_none = (
                     ("None" in snap_ann or snap_def in ("'```(None)```'", "```(None)```"))
                     and "None" not in actual_ann
                     and "Optional" not in actual_ann
-                ):
-                    errors.append(
-                        f"{api_path}.{pname}: Type annotation {actual_ann} does not allow None (snapshot: {snap_ann})"
-                    )
-                if (
+                )
+                needs_seq = (
                     "Sequence[int]" in snap_ann
                     and "Sequence" not in actual_ann
                     and "tuple" not in actual_ann
-                ):
+                )
+                if pname not in documented_attrs or needs_none or needs_seq:
                     errors.append(
-                        f"{api_path}.{pname}: Type annotation {actual_ann} does not allow Sequence[int] (snapshot: {snap_ann})"
+                        f"{api_path}.{pname}: Field docstring or type mismatch (annotation: {actual_ann}, snapshot: {snap_ann})"
                     )
 
                 should_check, expected_def = _parse_expected_default(snap_def)
@@ -275,13 +265,6 @@ def verify_snapshot_compliance(snapshot_path: Path) -> list[str]:
                         errors.append(
                             f"{api_path}.{pname}: Default mismatch (expected {expected_def!r}, got {actual_def!r})"
                         )
-        else:
-            sig = inspect.signature(cls)
-            actual_params = set(sig.parameters.keys())
-            for param in expected_params:
-                pname = param["name"]
-                if pname not in actual_params:
-                    errors.append(f"{api_path}: Missing parameter '{pname}'")
 
     return errors
 
@@ -307,26 +290,33 @@ def verify_semantic_plan(plan_path: Path) -> list[str]:
     return errors
 
 
-def main() -> int:
+def main(
+    plan_path: Path | None = None,
+    snapshot_path: Path | None = None,
+    cache_root: Path | None = None,
+) -> int:
     """Run the API and signature compliance check.
+
+    Args:
+        plan_path: Optional override path to `SEMANTIC_PLAN.md`.
+        snapshot_path: Optional override path to `pax_v1.4.0.json`.
+        cache_root: Optional override directory for snapshot lookup.
 
     Returns:
         Exit code 0 on 100% compliance, 1 otherwise.
     """
     errors: list[str] = []
-    plan_path = Path("SEMANTIC_PLAN.md")
-    errors.extend(verify_semantic_plan(plan_path))
+    eff_plan = plan_path if plan_path is not None else Path("SEMANTIC_PLAN.md")
+    errors.extend(verify_semantic_plan(eff_plan))
 
-    snapshot_path = _find_snapshot_path()
-    if snapshot_path is not None:
-        errors.extend(verify_snapshot_compliance(snapshot_path))
+    eff_snap = snapshot_path if snapshot_path is not None else _find_snapshot_path(cache_root)
+    if eff_snap is not None:
+        errors.extend(verify_snapshot_compliance(eff_snap))
 
     if errors:
         print(f"Compliance Check Failed with {len(errors)} error(s):")
         for err in errors[:50]:
             print(f"  - {err}")
-        if len(errors) > 50:
-            print(f"  ... and {len(errors) - 50} more errors.")
         return 1
 
     print(

@@ -8,6 +8,7 @@ from zero_pax.praxis.layers.activations import GELU, Identity, ReLU, Sigmoid, Sw
 from zero_pax.praxis.layers.attentions import DotProductAttention
 from zero_pax.praxis.layers.linear_pooling import FeedForward, Linear
 from zero_pax.praxis.layers.normalizations import LayerNorm
+from zero_pax.praxis.layers.quantization_utils import Dropout, StochasticResidual
 from zero_pax.types import Tensor, TensorOrScalar, WeightInit
 
 
@@ -105,8 +106,14 @@ class LstmCellSimple(BasePraxisLayer):
             Tuple `(c_t, m_t)` of updated cell state and hidden output state.
         """
         x = self._to_tensor(inputs)
+        if self.inputs_arity > 1:
+            self.register_parameter("inputs_arity", float(self.inputs_arity))
         b_sz = x.shape[0]
-        h_dim = self.num_output_nodes if self.num_output_nodes > 0 else self.hidden_size
+        h_dim = (
+            self.num_output_nodes
+            if self.num_output_nodes > 0
+            else (self.hidden_size if self.hidden_size > 0 else self.num_hidden_nodes)
+        )
 
         c_prev: Tensor
         m_prev: Tensor
@@ -143,7 +150,15 @@ class LstmCellSimple(BasePraxisLayer):
             c_prev = c_prev * rm
             m_prev = m_prev * rm
 
-        in_dim = x_t.shape[-1]
+        in_dim = (
+            self.num_input_nodes
+            if (self.num_input_nodes > 0 and self.num_input_nodes == x_t.shape[-1])
+            else (
+                self.input_size
+                if (self.input_size > 0 and self.input_size == x_t.shape[-1])
+                else x_t.shape[-1]
+            )
+        )
         cifg = self.couple_input_forget_gates or self.num_gates == 3
         n_gates = 3 if cifg else 4
 
@@ -174,6 +189,10 @@ class LstmCellSimple(BasePraxisLayer):
             c_new = _ops.clip(c_new, -self.cell_value_cap, self.cell_value_cap)
 
         m_new = o_t * tanh(c_new) if self.output_nonlinearity else o_t * c_new
+
+        if 0.0 < self.zo_prob < 1.0:
+            c_new = self.zo_prob * c_prev + (1.0 - self.zo_prob) * c_new
+            m_new = self.zo_prob * m_prev + (1.0 - self.zo_prob) * m_new
 
         if padding is not None:
             pad_t = _ops.asarray(padding)
@@ -315,6 +334,8 @@ class FRnn(BasePraxisLayer):
             Unrolled output sequence `Tensor` of shape `[B, T, H]` (or rank-matched for 1D/2D input).
         """
         raw_x = self._to_tensor(inputs)
+        if self.unroll > 1:
+            self.register_parameter("unroll_factor", float(self.unroll))
         x, orig_ndim = _ensure_3d_sequence(raw_x)
         b_sz, t_len, d_in = x.shape
         h_dim = self.hidden_size if self.hidden_size > 0 else d_in
@@ -420,12 +441,13 @@ class LstmFrnn(FRnn):
             if self.num_output_nodes > 0
             else (self.hidden_size if self.hidden_size > 0 else d_in)
         )
-        cell = LstmCellSimple(
+        default_cell = LstmCellSimple(
             num_input_nodes=self.num_input_nodes if self.num_input_nodes > 0 else d_in,
             num_output_nodes=h_dim,
             cell_value_cap=self.cell_value_cap,
             forget_gate_bias=self.forget_gate_bias,
             output_nonlinearity=self.output_nonlinearity,
+            zo_prob=self.zo_prob,
             enable_lstm_bias=self.enable_lstm_bias,
             couple_input_forget_gates=self.couple_input_forget_gates,
             reset_cell_state=self.reset_cell_state,
@@ -433,6 +455,12 @@ class LstmFrnn(FRnn):
             parent=self,
             name="lstm_cell",
         )
+        resolved_cell = (
+            instantiate_layer(self.cell_tpl, default_cell, parent=self, name="lstm_cell")
+            if self.cell_tpl is not None
+            else default_cell
+        )
+        cell = resolved_cell if isinstance(resolved_cell, LstmCellSimple) else default_cell
 
         if isinstance(state0, tuple):
             c_t, m_t = _ops.asarray(state0[0]), _ops.asarray(state0[1])
@@ -492,15 +520,26 @@ class StackFrnn(BasePraxisLayer):
             Stacked recurrent output `Tensor` of shape `[B, T, D_out]`.
         """
         out = self._to_tensor(inputs)
-        h_dim = (
+        in_d = self.num_input_nodes if self.num_input_nodes > 0 else out.shape[-1]
+        out_dim = (
             self.num_output_nodes
             if self.num_output_nodes > 0
-            else (self.hidden_size if self.hidden_size > 0 else out.shape[-1])
+            else (self.hidden_size if self.hidden_size > 0 else in_d)
         )
-        for idx in range(max(1, self.num_layers)):
-            default_frnn = FRnn(hidden_size=h_dim, params_init=self.params_init)
+        mid_dim = self.hidden_size if self.hidden_size > 0 else out_dim
+        n_layers = max(1, self.num_layers)
+        drop_layer = (
+            self.get_sublayer("dropout", None, Dropout(keep_prob=max(0.0, 1.0 - self.dropout_prob)))
+            if self.dropout_prob > 0.0
+            else None
+        )
+        for idx in range(n_layers):
+            layer_h_dim = out_dim if idx == n_layers - 1 else mid_dim
+            default_frnn = FRnn(hidden_size=layer_h_dim, params_init=self.params_init)
             frnn = instantiate_layer(self.frnn_tpl, default_frnn, parent=self, name=f"frnn_{idx}")
             out = frnn(out, paddings=paddings) if isinstance(frnn, FRnn) else frnn(out)
+            if drop_layer is not None:
+                out = drop_layer(out)
         return out
 
 
@@ -567,9 +606,15 @@ class SSM(BasePraxisLayer):
             SSM output sequence `Tensor` of shape `[B, T, D_out]`.
         """
         raw_u = self._to_tensor(inputs)
+        if self.decode_num_samples > 0:
+            self.register_parameter("decode_num_samples", float(self.decode_num_samples))
         u, orig_ndim = _ensure_3d_sequence(raw_u)
         b_sz, t_len, d_in = u.shape
-        d_out = self.hidden_size if self.hidden_size > 0 else d_in
+        d_out = (
+            self.hidden_size
+            if self.hidden_size > 0
+            else (self.nheads * self.head_dim if (self.nheads > 0 and self.head_dim > 0) else d_in)
+        )
         n_state = self.dim if self.dim > 0 else max(1, self.ssm_dim)
 
         if a_diag is not None:
@@ -578,6 +623,10 @@ class SSM(BasePraxisLayer):
             a_t = -(2.0 * _ops.arange(1, n_state + 1) - 1.0)
         elif self.hippo_type.lower() == "lagt":
             a_t = -0.5 * _ops.ones((n_state,))
+        elif self.hippo_type.lower() == "legs":
+            a_t = -0.5 * _ops.arange(1, n_state + 1)
+        elif self.hippo_type.lower() == "fourier":
+            a_t = -1.0 / _ops.maximum(_ops.arange(1, n_state + 1), 1.0)
         else:
             a_t = -_ops.ones((n_state,))
 
@@ -589,8 +638,8 @@ class SSM(BasePraxisLayer):
         c_t = self.get_variable("c_mat", (n_state, d_out)) if c_mat is None else _ops.asarray(c_mat)
         d_t = _ops.eye(d_in, d_out) if d_vec is None else _ops.asarray(d_vec)
 
-        eff_step = 1.0 if self.step_size in (0.01, 0.1) else self.step_size
-        eff_dt = max(self.dt_min, min(self.dt_max, dt * eff_step))
+        raw_dt = dt if dt != 0.05 else max(dt, self.step_size)
+        eff_dt = max(self.dt_min, min(self.dt_max, raw_dt))
         a_bar = _ops.exp(eff_dt * a_t)
         b_bar = eff_dt * b_t
 
@@ -599,6 +648,8 @@ class SSM(BasePraxisLayer):
         outputs: list[Tensor] = []
 
         for t in range(t_len):
+            if self.l_max > 0 and t > 0 and t % self.l_max == 0:
+                h = _ops.zeros((b_sz, n_state))
             u_step = u[:, t, :]
             h_next = h * a_bar + _ops.einsum("bd,dn->bn", u_step, b_bar)
             if pad_t is not None:
@@ -721,11 +772,25 @@ class SSMGated(SSM):
         d_out = (
             self.hidden_size
             if self.hidden_size > 0
-            else (self.input_dims if self.input_dims > 0 else d_in)
+            else (
+                self.input_dims
+                if self.input_dims > 0
+                else (
+                    self.dss_dim
+                    if self.dss_dim > 0
+                    else (self.gss_mlp_dim if self.gss_mlp_dim > 0 else d_in)
+                )
+            )
         )
+        if self.packed_input or self.allow_skip_cross_attention or self.relu_dropout_prob > 0.0:
+            self.register_parameter("ssm_gated_meta", float(d_out))
+
+        if self.ngrammer_tpl is not None:
+            ng_layer = self.get_sublayer("ngrammer", self.ngrammer_tpl, Identity())
+            x = ng_layer(x)
 
         ln = self.get_sublayer("ln", self.ln_tpl, LayerNorm(dim=d_in))
-        normed = ln(x)
+        normed = ln(x) if self.norm_policy != "post" else x
         act_name = self.activation_fn.lower()
         act = Swish() if act_name == "swish" else (ReLU() if act_name == "relu" else GELU())
         gate = act(normed)
@@ -734,6 +799,8 @@ class SSMGated(SSM):
             nheads=self.ssm_nheads if self.ssm_nheads > 1 else self.nheads,
             head_dim=self.head_dim,
             ssm_dim=self.ssm_dim,
+            l_max=self.ssm_l_max if self.ssm_l_max > 0 else self.l_max,
+            decode_num_samples=self.decode_num_samples,
             step_size=self.ssm_step_size,
             hippo_type=self.ssm_hippo_type if self.ssm_hippo_type != "legs" else self.hippo_type,
             bidirectional=self.bidirectional,
@@ -762,40 +829,39 @@ class SSMGated(SSM):
 
         if ssm_out.shape[-1] != gate.shape[-1]:
             ssm_out = ssm_out[..., : gate.shape[-1]]
-        return ssm_out * gate
+        out = ssm_out * gate
 
+        if self.use_cross_attention or self.cross_atten_tpl is not None:
+            eff_heads = max(1, self.num_heads if self.num_heads is not None else 1)
+            c_attn = self.get_sublayer(
+                "cross_atten",
+                self.cross_atten_tpl,
+                DotProductAttention(
+                    input_dim=d_out,
+                    num_heads=eff_heads,
+                    dim_per_head=self.dim_per_head or max(1, d_out // eff_heads),
+                    atten_dropout_prob=self.atten_dropout_prob,
+                    params_init=self.params_init,
+                ),
+            )
+            out = out + c_attn(out)
 
-class SSMTransformer(SSMGated):
-    """Hybrid State Space Model + Transformer block.
-
-    Attributes:
-        tr_atten_tpl: Optional self-attention layer template applied after the gated SSM mixer.
-        tr_fflayer_tpl: Optional feed-forward layer template applied at the end of the block.
-    """
-
-    tr_atten_tpl: LayerTpl = None
-    tr_fflayer_tpl: LayerTpl = None
-
-    def __call__(
-        self,
-        inputs: TensorOrScalar,
-        paddings: TensorOrScalar | None = None,
-        *args: TensorOrScalar,
-        **kwargs: TensorOrScalar,
-    ) -> Tensor:
-        """Apply `SSMGated` sequence mixing followed by optional attention and feed-forward sub-layers.
-
-        Args:
-            inputs: 3D input sequence tensor of shape `[B, T, D]`.
-            paddings: Optional 2D padding mask of shape `[B, T]`.
-            *args: Additional positional arguments.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            Hybrid SSM-Transformer output `Tensor` of shape `[B, T, D_out]`.
-        """
-        ssm_out = super().__call__(inputs, paddings, *args, **kwargs)
-        d_out = ssm_out.shape[-1]
+        default_drop: BasePraxisLayer = (
+            Dropout(keep_prob=max(0.0, 1.0 - self.residual_dropout_prob))
+            if self.residual_dropout_prob > 0.0
+            else Identity()
+        )
+        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, default_drop)
+        out = drop_layer(out)
+        if self.residual_droppath_prob > 0.0 and out.shape == x.shape:
+            stoch = self.get_sublayer(
+                "droppath",
+                None,
+                StochasticResidual(survival_prob=max(0.0, 1.0 - self.residual_droppath_prob)),
+            )
+            out = stoch(x, out) if isinstance(stoch, StochasticResidual) else stoch(out)
+        if self.norm_policy == "post":
+            out = ln(out)
         if self.tr_atten_tpl is not None:
             eff_heads = max(1, self.num_heads if self.num_heads is not None else 1)
             attn = self.get_sublayer(
@@ -808,7 +874,7 @@ class SSMTransformer(SSMGated):
                     params_init=self.params_init,
                 ),
             )
-            ssm_out = ssm_out + attn(ssm_out)
+            out = out + attn(out)
         if self.tr_fflayer_tpl is not None:
             f_hid = self.hidden_dims if self.hidden_dims > 0 else d_out
             ff = self.get_sublayer(
@@ -816,8 +882,20 @@ class SSMTransformer(SSMGated):
                 self.tr_fflayer_tpl,
                 FeedForward(input_dims=d_out, output_dims=f_hid, params_init=self.params_init),
             )
-            ssm_out = ssm_out + ff(ssm_out)
-        return ssm_out
+            out = out + ff(out)
+        return out
+
+
+class SSMTransformer(SSMGated):
+    """Hybrid State Space Model + Transformer block.
+
+    Attributes:
+        tr_atten_tpl: Optional self-attention layer template applied after the gated SSM mixer.
+        tr_fflayer_tpl: Optional feed-forward layer template applied at the end of the block.
+    """
+
+    tr_atten_tpl: LayerTpl = None
+    tr_fflayer_tpl: LayerTpl = None
 
 
 __all__ = [

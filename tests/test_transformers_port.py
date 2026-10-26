@@ -14,6 +14,7 @@ from zero_pax.praxis.layers import (
     LanguageModelContinuousBatching,
     LanguageModelDPO,
     LayerNorm,
+    MaskedLmDataAugmenter,
     MultitaskResidualAdapter,
     PipelinedTransformer,
     ReLU,
@@ -26,6 +27,7 @@ from zero_pax.praxis.layers import (
     TransformerFeedForwardMoe,
     TransformerLm,
 )
+from zero_pax.types import DecoderHParams, WeightInit
 
 
 def test_transformer_feed_forward_variants() -> None:
@@ -150,6 +152,18 @@ def test_transformer_and_stacks() -> None:
         stack(inputs, paddings=paddings, cross_inputs=cross), inputs, atol=1e-5
     )
 
+    stack_active = StackedTransformer(
+        num_layers=2,
+        model_dims=8,
+        hidden_dims=16,
+        num_heads=2,
+        use_cross_attention=True,
+        params_init=WeightInit(method="xavier", scale=1.0),
+    )
+    out_stack_active = stack_active(inputs, paddings=paddings, cross_inputs=cross)
+    assert out_stack_active.shape == (2, 4, 8)
+    np.testing.assert_not_allclose(out_stack_active, inputs)
+
     stack_seq_tpl = StackedTransformer(
         num_layers=2,
         transformer_layer_params_tpl=[ReLU(), Identity()],
@@ -160,10 +174,18 @@ def test_transformer_and_stacks() -> None:
     np.testing.assert_allclose(
         rep(inputs, paddings=paddings, cross_inputs=cross), inputs, atol=1e-5
     )
+    rep_active = StackedTransformerRepeated(block=stack_active, x_times=2)
+    np.testing.assert_not_allclose(
+        rep_active(inputs, paddings=paddings, cross_inputs=cross), inputs
+    )
     np.testing.assert_allclose(StackedTransformerRepeated()(inputs), inputs, atol=1e-5)
 
     pipe = PipelinedTransformer(pipeline_stage=stack, num_pipeline_stages=2, circular_repeat=1)
     np.testing.assert_allclose(pipe(inputs, paddings=paddings), inputs, atol=1e-5)
+    pipe_active = PipelinedTransformer(
+        pipeline_stage=stack_active, num_pipeline_stages=2, circular_repeat=1
+    )
+    np.testing.assert_not_allclose(pipe_active(inputs, paddings=paddings), inputs)
     np.testing.assert_allclose(PipelinedTransformer()(inputs), inputs, atol=1e-5)
 
 
@@ -174,8 +196,11 @@ def test_language_and_sequence_models() -> None:
     paddings = np.zeros((2, 4), dtype=np.float32)
 
     lm = TransformerLm(model_dims=8, vocab_size=10, ngrammer_tpl=Identity())
-    assert lm(token_ids, paddings=paddings).shape == (2, 4, 10)
-    assert lm(inputs, paddings=paddings).shape == (2, 4, 10)
+    out_lm_ids = lm(token_ids, paddings=paddings)
+    assert out_lm_ids.shape == (2, 4, 10)
+    np.testing.assert_allclose(out_lm_ids, np.zeros((2, 4, 10)), atol=1e-5)
+    out_lm_inp = lm(inputs, paddings=paddings)
+    assert out_lm_inp.shape == (2, 4, 10)
 
     lm_sep = TransformerLm(
         model_dims=8,
@@ -187,15 +212,21 @@ def test_language_and_sequence_models() -> None:
     np.testing.assert_allclose(np.sum(probs_sep, axis=-1), np.ones((2, 4)), atol=1e-5)
 
     lm_skip = TransformerLm(model_dims=8, vocab_size=10, skip_compute_loss=True)
-    assert lm_skip(inputs).shape == (2, 4, 8)
+    out_skip = lm_skip(inputs)
+    assert out_skip.shape == (2, 4, 8)
+    np.testing.assert_allclose(np.mean(out_skip, axis=-1), np.zeros((2, 4)), atol=1e-5)
     assert TransformerLm()(inputs).shape == (2, 4, 8)
 
     enc_dec = TransformerEncoderDecoder(model_dims=8, softmax_tpl=ReLU())
-    assert enc_dec(inputs, targets=inputs).shape == (2, 4, 8)
+    out_ed = enc_dec(inputs, targets=inputs)
+    assert out_ed.shape == (2, 4, 8)
+    assert np.all(np.asarray(out_ed) >= 0.0)
     assert TransformerEncoderDecoder(model_dims=8)(inputs).shape == (2, 4, 8)
 
     assert LanguageModel()(inputs).shape == (2, 4, 8)
-    assert LanguageModel(lm_tpl=ReLU())(inputs).shape == (2, 4, 8)
+    np.testing.assert_allclose(
+        LanguageModel(lm_tpl=ReLU())(inputs - 5.0), np.maximum(0.0, inputs - 5.0)
+    )
     assert LanguageModelContinuousBatching()(inputs).shape == (2, 4, 8)
 
     dpo_sig = LanguageModelDPO(
@@ -220,6 +251,259 @@ def test_language_and_sequence_models() -> None:
     np.testing.assert_allclose(loss_hinge, np.full((2, 4), 0.6), atol=1e-5)
 
     assert SequenceModel()(inputs).shape == (2, 4, 8)
-    assert SequenceModel(model_tpl=Identity())(inputs).shape == (2, 4, 8)
+    np.testing.assert_allclose(SequenceModel(model_tpl=Identity())(inputs), inputs)
     assert BertModel()(inputs).shape == (2, 4, 8)
-    assert BertModel(lm_tpl=Identity())(inputs).shape == (2, 4, 8)
+    np.testing.assert_allclose(BertModel(lm_tpl=Identity())(inputs), inputs)
+
+    slot_masked = LanguageModelContinuousBatching(lm_tpl=Identity())(
+        inputs, slot_mask=np.array([1.0, 0.0], dtype=np.float32)
+    )
+    np.testing.assert_allclose(slot_masked[0], inputs[0])
+    np.testing.assert_allclose(slot_masked[1], np.zeros((4, 8)))
+
+    x_tr = np.arange(1, 25, dtype=np.float32).reshape((2, 3, 4)) * 0.1
+    ffn_custom_ln = TransformerFeedForward(
+        input_dims=4,
+        norm_policy="post",
+        ln_tpl=Identity(),
+        fflayer_tpl=Identity(),
+    )
+    np.testing.assert_allclose(ffn_custom_ln(x_tr), x_tr * 2.0, atol=1e-5)
+
+    ffn_gated_custom = TransformerFeedForward(
+        input_dims=4,
+        use_gated_activation=True,
+        ffn0_tpl=Identity(),
+        ffn1_tpl=Identity(),
+        ffn2_tpl=Identity(),
+        ln_tpl=Identity(),
+    )
+    np.testing.assert_allclose(ffn_gated_custom(x_tr), x_tr + np.square(x_tr), atol=1e-5)
+
+    moe_top2 = TransformerFeedForwardMoe(
+        input_dims=4,
+        hidden_dims=4,
+        num_experts=3,
+        gating_func="top2",
+        expert_capacity_dim=2,
+        norm_policy="pre",
+        add_skip_connection=False,
+        use_gated_activation=True,
+    )
+    out_moe_top2 = moe_top2(
+        x_tr,
+        gate_w=np.ones((4, 3), dtype=np.float32),
+        wi_0=np.ones((3, 4, 4), dtype=np.float32),
+        wo_0=np.ones((3, 4, 4), dtype=np.float32),
+    )
+    assert out_moe_top2.shape == (2, 3, 4)
+
+    moe_ec = TransformerFeedForwardMoe(
+        input_dims=4,
+        hidden_dims=4,
+        num_experts=2,
+        gating_func="expert_choice",
+    )
+    assert moe_ec(x_tr).shape == (2, 3, 4)
+
+    moe_2d_w = TransformerFeedForwardMoe(input_dims=4, hidden_dims=4)
+    np.testing.assert_allclose(
+        moe_2d_w(
+            x_tr,
+            w1=np.zeros((4, 4), dtype=np.float32),
+            w2=np.zeros((4, 4), dtype=np.float32),
+        ),
+        x_tr,
+        atol=1e-5,
+    )
+
+    tr_custom = Transformer(
+        model_dims=4,
+        dim_per_head=2,
+        use_cross_attention=True,
+        tr_atten_tpl=Identity(),
+        cross_atten_tpl=Identity(),
+        tr_fflayer_tpl=Identity(),
+        ln_tpl=Identity(),
+    )
+    np.testing.assert_allclose(tr_custom(x_tr, cross_inputs=x_tr), x_tr * 4.0, atol=1e-5)
+
+    st_rep = StackedTransformerRepeated(sub_tpl=Identity(), x_times=1)
+    np.testing.assert_allclose(st_rep(x_tr), x_tr)
+    np.testing.assert_allclose(PipelinedTransformer(pipeline_stage=Identity())(x_tr), x_tr)
+
+    lm_prefix = TransformerLm(
+        model_dims=4,
+        vocab_size=4,
+        model_type="prefix",
+        position_emb_tpl=Identity(),
+        stacked_transformer_tpl=Identity(),
+        softmax_tpl=Identity(),
+        final_ln_tpl=Identity(),
+    )
+    np.testing.assert_allclose(
+        lm_prefix(np.array([[0, 1, 2, 3]], dtype=np.int32)), np.zeros((1, 4, 4))
+    )
+
+    enc_dec_custom = TransformerEncoderDecoder(
+        model_dims=4,
+        encoder_embedding_tpl=Identity(),
+        decoder_embedding_tpl=Identity(),
+        encoder_ngrammer_tpl=Identity(),
+        decoder_ngrammer_tpl=Identity(),
+        position_emb_tpl=Identity(),
+        encoder_stacked_transformer_tpl=Identity(),
+        decoder_stacked_transformer_tpl=Identity(),
+        encoder_ln_tpl=Identity(),
+        decoder_ln_tpl=Identity(),
+    )
+    np.testing.assert_allclose(enc_dec_custom(x_tr), x_tr * 2.0, atol=1e-5)
+
+    dpo_plain = LanguageModelDPO(mdl=Identity(), use_ref_model=False, label_smoothing=0.0)
+    loss_dpo = dpo_plain(x_tr, rejected_inputs=x_tr * 0.5)
+    assert loss_dpo.shape == (2, 3) and np.all(np.asarray(loss_dpo) > 0.0)
+
+    bert_aug = BertModel(
+        lm_tpl=Identity(),
+        mlm_augmenter_tpl=MaskedLmDataAugmenter(vocab_size=10, mask_token_id=9, mask_prob=0.0),
+        label_smoothing_prob=0.1,
+        nsp_weight=0.5,
+    )
+    np.testing.assert_allclose(bert_aug(x_tr), x_tr)
+    assert "bert_loss_meta" in bert_aug.params
+    bert_force = BertModel(lm_tpl=Identity(), force_mask_generation=True, mask_token_id=9)
+    assert bert_force(np.array([[1, 2, 3]], dtype=np.int32)).shape == (1, 3)
+
+    ffn_drops = TransformerFeedForward(
+        input_dims=4,
+        hidden_dims=4,
+        relu_dropout_prob=0.1,
+        residual_dropout_prob=0.1,
+        residual_droppath_prob=0.1,
+        internal_gshard_variance_scaling_fan_in_init=True,
+        params_init=WeightInit(method="ones", scale=0.25),
+    )
+    assert ffn_drops(x_tr).shape == (2, 3, 4)
+    assert "gshard_fan_in_init" in ffn_drops.params
+
+    moe_full = TransformerFeedForwardMoe(
+        input_dims=4,
+        hidden_dims=4,
+        num_experts=2,
+        num_groups=2,
+        apply_padding_first=True,
+        relu_dropout_prob=0.1,
+        residual_dropout_prob=0.1,
+        residual_droppath_prob=0.1,
+        moe_load_balance_loss_weight=0.5,
+        params_init=WeightInit(method="ones", scale=0.25),
+    )
+    assert moe_full(x_tr, paddings=np.zeros((2, 3), dtype=np.float32)).shape == (2, 3, 4)
+    assert "aux_loss" in moe_full.params
+    assert "moe_routing_meta" in moe_full.params
+    moe_no_aux = TransformerFeedForwardMoe(
+        input_dims=4, hidden_dims=4, num_experts=2, moe_load_balance_loss_weight=None
+    )
+    assert moe_no_aux(x_tr).shape == (2, 3, 4)
+
+    tr_meta = Transformer(
+        model_dims=4,
+        num_heads=2,
+        allow_at_least_one_headed_attention=True,
+        packed_input=True,
+        allow_skip_cross_attention=True,
+    )
+    assert tr_meta(x_tr).shape == (2, 3, 4)
+    assert "transformer_meta" in tr_meta.params
+
+    st_drop = StackedTransformer(
+        num_layers=1,
+        model_dims=4,
+        num_heads=2,
+        input_dropout_prob=0.1,
+        enable_while_loop=False,
+        packed_input=True,
+    )
+    assert st_drop(x_tr).shape == (2, 3, 4)
+    assert "stack_meta" in st_drop.params
+
+    st_rep_inter = StackedTransformerRepeated(
+        sub_tpl=Identity(),
+        x_times=0,
+        nd_prefix_shape=(2,),
+        unroll_in_decode=False,
+        collect_intermediate_outputs=True,
+        return_intermediate_outputs=True,
+    )
+    out_rep_inter = st_rep_inter(x_tr)
+    assert out_rep_inter.shape == (2, 2, 3, 4)
+    st_rep_collect_only = StackedTransformerRepeated(
+        sub_tpl=Identity(),
+        x_times=1,
+        collect_intermediate_outputs=True,
+        return_intermediate_outputs=False,
+    )
+    assert st_rep_collect_only(x_tr).shape == (2, 3, 4)
+
+    pipe_mb = PipelinedTransformer(
+        pipeline_stage=Identity(),
+        num_pipeline_stages=2,
+        num_pipeline_microbatches=2,
+        stream_io=True,
+    )
+    assert pipe_mb(x_tr).shape == (2, 3, 4)
+    assert "pipeline_tr_meta" in pipe_mb.params
+
+    pipe_mb_sz = PipelinedTransformer(
+        pipeline_stage=StackedTransformer(num_layers=1, model_dims=4),
+        pipeline_microbatch_size=1,
+    )
+    assert pipe_mb_sz(x_tr).shape == (2, 3, 4)
+
+    lm_opts = TransformerLm(
+        model_dims=4,
+        vocab_size=4,
+        packed_input=True,
+        skip_aux_loss=True,
+        record_activations_in_xent_output=True,
+        entropy_loss_weight=0.1,
+        params_init=WeightInit(method="ones", scale=0.25),
+    )
+    loss_lm_opts = lm_opts(
+        np.array([[0, 1, 2], [1, 2, 3]], dtype=np.int32),
+        labels=np.array([[1, 2, 3], [2, 3, 0]], dtype=np.int32),
+    )
+    assert loss_lm_opts.shape == (2, 3)
+    assert "activations" in lm_opts.params
+
+    ed_packed = TransformerEncoderDecoder(model_dims=4, packed_input=True)
+    assert ed_packed(x_tr).shape == (2, 3, 4)
+    assert "enc_dec_packed" in ed_packed.params
+
+    lm_task = LanguageModel(
+        lm_tpl=Identity(),
+        return_predictions=True,
+        count_tokens=True,
+        decoder_tpl=DecoderHParams(),
+        label_smoothing_prob=0.1,
+        z_loss_weight=0.01,
+    )
+    np.testing.assert_allclose(lm_task(x_tr), x_tr)
+    assert "predictions" in lm_task.params and "num_tokens" in lm_task.params
+
+    dpo_tc = LanguageModelDPO(
+        mdl=Identity(),
+        token_counter=Identity(),
+        apply_eval_sample_weights=True,
+    )
+    np.testing.assert_allclose(dpo_tc(x_tr), x_tr)
+    assert "dpo_eval_weights" in dpo_tc.params
+
+    seq_task = SequenceModel(
+        model_tpl=Identity(),
+        return_predictions=True,
+        decoder_tpl=DecoderHParams(),
+        label_smoothing_prob=0.1,
+    )
+    np.testing.assert_allclose(seq_task(x_tr), x_tr)
+    assert "predictions" in seq_task.params and "seq_model_meta" in seq_task.params

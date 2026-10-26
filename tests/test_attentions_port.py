@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tests import conftest as np
+from zero_pax import _tensor_ops as t_ops
 from zero_pax.praxis.layers import (
     AttentionProjection,
     DotProductAttention,
@@ -17,8 +18,11 @@ from zero_pax.praxis.layers import (
     LocalSelfAttentionRelativeBias,
     LocalSelfAttentionXL,
     RelativeBias,
+    ReLU,
     SelfAttentionWithNormAndResidual,
 )
+from zero_pax.praxis.layers.attentions import _apply_rotary_position_emb
+from zero_pax.types import WeightInit
 
 
 def test_attention_projection() -> None:
@@ -43,11 +47,30 @@ def test_attention_projection() -> None:
     w_out = np.ones((2, 4, 8), dtype=np.float32) * 0.5
     b_out = np.full((8,), 0.1, dtype=np.float32)
     proj_out = AttentionProjection(
-        input_dim=8, num_heads=2, dim_per_head=4, is_output_projection=True, use_bias=True
+        input_dim=8,
+        num_heads=2,
+        dim_per_head=4,
+        is_output_projection=True,
+        use_bias=True,
+        use_nhd_shape=True,
     )
     back = proj_out(out, w=w_out, b=b_out)
     expected_back = np.einsum("btnh,nhd->btd", np.asarray(out), w_out) + b_out
     np.testing.assert_allclose(back, expected_back, atol=1e-5)
+
+    proj_out_dnh = AttentionProjection(
+        input_dim=8,
+        num_heads=2,
+        dim_per_head=4,
+        is_output_projection=True,
+        use_bias=False,
+        use_nhd_shape=False,
+    )
+    w_dnh = np.ones((8, 2, 4), dtype=np.float32) * 0.5
+    np.testing.assert_allclose(proj_out_dnh(out, w=w_dnh), expected_back - 0.1, atol=1e-5)
+    np.testing.assert_allclose(
+        proj_out_dnh(out, w=w_dnh.reshape((64,))), expected_back - 0.1, atol=1e-5
+    )
 
 
 def test_relative_bias() -> None:
@@ -115,6 +138,19 @@ def test_dot_product_attention_variants() -> None:
         inputs, atten_mask=mask_3d, query_w=w_qkv, key_w=w_qkv, value_w=w_qkv, post_w=w_post
     )
     np.testing.assert_allclose(out_masked, np.zeros((2, 4, 8)), atol=1e-5)
+
+    from zero_pax.types import WeightInit
+
+    dpa_comb = DotProductAttention(
+        input_dim=8,
+        num_heads=2,
+        dim_per_head=4,
+        combine_qkv=True,
+        params_init=WeightInit(method="ones", scale=0.25),
+    )
+    out_comb = dpa_comb(inputs)
+    assert out_comb.shape == (2, 4, 8)
+    assert np.any(np.asarray(out_comb) != 0.0)
 
     layer_ctx = DotProductAttentionWithContext(
         input_dim=8, num_heads=2, dim_per_head=4, left_context=1, right_context=0
@@ -210,6 +246,18 @@ def test_self_attention_with_norm_and_residual() -> None:
     )
     np.testing.assert_allclose(pre(inputs), inputs * 2.0, atol=1e-5)
 
+    pre_active = SelfAttentionWithNormAndResidual(
+        num_heads=2,
+        dim_per_head=4,
+        pre_layer_norm=True,
+        norm_tpl=LayerNorm(dim=8),
+        input_weight=2.0,
+        params_init=WeightInit(method="xavier", scale=1.0),
+    )
+    out_pre_active = pre_active(inputs)
+    assert out_pre_active.shape == (2, 4, 8)
+    np.testing.assert_not_allclose(out_pre_active, inputs * 2.0)
+
     post = SelfAttentionWithNormAndResidual(
         num_heads=2,
         pre_layer_norm=False,
@@ -217,5 +265,202 @@ def test_self_attention_with_norm_and_residual() -> None:
         self_atten_tpl=Identity(),
         residual_dropout_tpl=Identity(),
     )
-    expected_post = LayerNorm(dim=8)(inputs)
+    expected_post = np.ref_layer_norm(inputs, eps=1e-6)
     np.testing.assert_allclose(post(inputs), expected_post, atol=1e-5)
+
+    x_1d_head = t_ops.ones((1, 2, 1, 1))
+    np.testing.assert_allclose(_apply_rotary_position_emb(x_1d_head), x_1d_head)
+    x_odd_head = t_ops.ones((1, 2, 1, 3))
+    out_odd_rope = _apply_rotary_position_emb(x_odd_head)
+    np.testing.assert_allclose(out_odd_rope[:, :, :, 2], np.ones((1, 2, 1)))
+
+    proj_out_no_bias = AttentionProjection(
+        input_dim=6, num_heads=2, dim_per_head=3, is_output_projection=True, use_bias=False
+    )
+    np.testing.assert_allclose(
+        proj_out_no_bias(np.ones((1, 2, 2, 3), dtype=np.float32)), np.zeros((1, 2, 6))
+    )
+
+    np.testing.assert_allclose(
+        DotProductAttentionXL(input_dim=4, num_heads=2, rel_pos_emb_dim=0)(
+            np.ones((1, 2, 4), dtype=np.float32)
+        ),
+        np.zeros((1, 2, 4)),
+    )
+    np.testing.assert_allclose(
+        DotProductAttentionWithContext(
+            input_dim=4, num_heads=2, left_context=None, right_context=1
+        )(np.ones((1, 2, 4), dtype=np.float32)),
+        np.zeros((1, 2, 4)),
+    )
+
+    proj_out_auto = AttentionProjection(
+        input_dim=0, num_heads=1, dim_per_head=0, is_output_projection=True, use_bias=True
+    )
+    x_nh = np.ones((1, 2, 2, 3), dtype=np.float32)
+    np.testing.assert_allclose(proj_out_auto(x_nh), np.zeros((1, 2, 6)))
+    np.testing.assert_allclose(
+        proj_out_auto(
+            x_nh,
+            w=np.ones((6, 6), dtype=np.float32),
+            b=np.ones((6,), dtype=np.float32),
+        ),
+        np.full((1, 2, 6), 7.0),
+    )
+
+    proj_in_auto = AttentionProjection(
+        input_dim=0, num_heads=2, dim_per_head=0, is_output_projection=False, use_bias=True
+    )
+    x_d = np.ones((1, 2, 4), dtype=np.float32)
+    np.testing.assert_allclose(proj_in_auto(x_d), np.zeros((1, 2, 2, 2)))
+    np.testing.assert_allclose(
+        proj_in_auto(
+            x_d,
+            w=np.ones((4, 4), dtype=np.float32),
+            b=np.ones((4,), dtype=np.float32),
+        ),
+        np.full((1, 2, 2, 2), 5.0),
+    )
+
+    rb = RelativeBias(num_heads=2, rb_stddev=0.05)
+    out_rb_1d = rb(np.array([0, 1], dtype=np.int32), 2)
+    np.testing.assert_allclose(out_rb_1d[:, :, 0, 0], out_rb_1d[:, :, 1, 1], atol=1e-5)
+    out_rb_none = rb(2, None)
+    assert out_rb_none.shape == (1, 2, 2, 2)
+
+    dpa_hidden = DotProductAttention(
+        input_dim=4,
+        hidden_dim=4,
+        num_heads=2,
+        internal_enable_query_scale=False,
+        ln_tpl=Identity(),
+        ngrammer_tpl=Identity(),
+    )
+    np.testing.assert_allclose(
+        dpa_hidden(
+            x_d,
+            atten_mask=np.zeros((1, 2, 2, 2), dtype=np.float32),
+        ),
+        np.zeros((1, 2, 4)),
+    )
+
+    dpa_custom_proj = DotProductAttention(
+        input_dim=4,
+        num_heads=2,
+        proj_tpl=lambda x, *a, **kw: t_ops.reshape(x, (1, 2, 2, 2)),
+        qk_einsum_tpl=lambda q, k: t_ops.einsum("btnh,bsnh->bnts", q, k),
+        pv_einsum_tpl=lambda p, v: t_ops.einsum("bnts,bsnh->btnh", p, v),
+        per_dim_scale_tpl=Identity(),
+        relative_bias_tpl=lambda q_len, *a, **kw: t_ops.zeros((1, 2, 2, 2)),
+    )
+    assert dpa_custom_proj(x_d).shape == (1, 2, 4)
+
+    lsa_rb_custom = LocalSelfAttentionRelativeBias(
+        input_dim=4, num_heads=2, relative_bias_tpl=RelativeBias(num_heads=2)
+    )
+    np.testing.assert_allclose(lsa_rb_custom(x_d), np.zeros((1, 2, 4)))
+    lsa_alibi_no_ctx = LocalSelfAttentionAlibi(input_dim=4, num_heads=2)
+    np.testing.assert_allclose(lsa_alibi_no_ctx(x_d), np.zeros((1, 2, 4)))
+
+    gqa_no_bias = GroupedQueryAttention(
+        input_dim=4,
+        num_heads=2,
+        num_kv_heads=2,
+        use_bias=False,
+        atten_temp=0.0,
+        params_init=WeightInit(method="ones", scale=0.5),
+    )
+    out_gqa_nb = gqa_no_bias(x_d)
+    assert out_gqa_nb.shape == (1, 2, 4)
+    assert np.any(np.asarray(out_gqa_nb) != 0.0)
+
+    # Verify strict causal masking invariance at t=0 when perturbing future token t=1
+    dpa_causal = DotProductAttentionWithContext(
+        input_dim=4,
+        num_heads=2,
+        dim_per_head=2,
+        left_context=2,
+        right_context=0,
+        params_init=WeightInit(method="xavier", scale=1.0, seed=42),
+    )
+    x_c1 = np.array([[[1.0, 2.0, 3.0, 4.0], [0.5, -0.5, 1.0, -1.0]]], dtype=np.float32)
+    x_c2 = np.array([[[1.0, 2.0, 3.0, 4.0], [9.0, 8.0, -7.0, 6.0]]], dtype=np.float32)
+    np.testing.assert_allclose(dpa_causal(x_c1)[:, 0, :], dpa_causal(x_c2)[:, 0, :], atol=1e-5)
+
+    sanr = SelfAttentionWithNormAndResidual(
+        num_heads=2,
+        dim_per_head=2,
+        self_atten_tpl=ReLU(),
+        force_no_residual=False,
+        residual_dropout_prob=0.1,
+    )
+    assert sanr(x_d).shape == (1, 2, 4)
+
+    proj_fan_out = AttentionProjection(
+        input_dim=4,
+        num_heads=2,
+        dim_per_head=2,
+        is_output_projection=True,
+        explicit_fan_in_fan_out_axes=True,
+        params_init=WeightInit(method="xavier", scale=1.0),
+    )
+    assert proj_fan_out(np.ones((1, 2, 2, 2), dtype=np.float32)).shape == (1, 2, 4)
+    proj_fan_in = AttentionProjection(
+        input_dim=4,
+        num_heads=2,
+        dim_per_head=2,
+        is_output_projection=False,
+        explicit_fan_in_fan_out_axes=True,
+        params_init=WeightInit(method="xavier", scale=1.0),
+    )
+    assert proj_fan_in(x_d).shape == (1, 2, 2, 2)
+
+    rb_len = RelativeBias(num_heads=2, use_length_as_position=True)
+    assert rb_len(t_ops.asarray(2), t_ops.asarray(2)).shape == (1, 2, 2, 2)
+
+    dpa_opts = DotProductAttention(
+        input_dim=4,
+        num_heads=2,
+        dim_per_head=2,
+        atten_dropout_prob=0.1,
+        internal_gshard_gaussian_init=True,
+        use_rotary_position_emb=True,
+        rotary_position_emb_tpl=Identity(),
+        cast_rotary_position_emb=True,
+        fprop_dtype="float32",
+        consolidate_rope_key_state=True,
+        decode_cache=True,
+        attention_mask_summary=True,
+        decoding_maybe_shard_projections=True,
+    )
+    assert dpa_opts(x_d, atten_mask=np.zeros((1, 1, 2, 2), dtype=np.float32)).shape == (1, 2, 4)
+    assert "rope_key_state" in dpa_opts.params
+    assert "atten_mask_summary" in dpa_opts.params
+
+    dpa_no_cache = DotProductAttention(input_dim=4, num_heads=2, decode_cache=False)
+    assert dpa_no_cache(x_d).shape == (1, 2, 4)
+    assert "key_state" not in dpa_no_cache.params
+
+    dpa_ctx_xl_none = DotProductAttentionWithContextXL(
+        input_dim=4, num_heads=2, rel_pos_emb_dim=None
+    )
+    assert dpa_ctx_xl_none(x_d).shape == (1, 2, 4)
+    dpa_ctx_xl_pos = DotProductAttentionWithContextXL(input_dim=4, num_heads=2, rel_pos_emb_dim=4)
+    assert dpa_ctx_xl_pos(x_d).shape == (1, 2, 4)
+
+    lsa_sim = LocalSelfAttention(input_dim=4, num_heads=2, block_size=1, simulated=True)
+    assert lsa_sim(x_d).shape == (1, 2, 4)
+    lsa_xl_none = LocalSelfAttentionXL(input_dim=4, num_heads=2, rel_pos_emb_dim=0)
+    assert lsa_xl_none(x_d).shape == (1, 2, 4)
+    lsa_xl_pos = LocalSelfAttentionXL(input_dim=4, num_heads=2, rel_pos_emb_dim=4)
+    assert lsa_xl_pos(x_d).shape == (1, 2, 4)
+
+    gqa_proj = GroupedQueryAttention(
+        input_dim=4,
+        hidden_dim=4,
+        num_heads=2,
+        num_kv_heads=2,
+        atten_dropout_prob=0.1,
+        proj_tpl=AttentionProjection(input_dim=4, num_heads=2, dim_per_head=2),
+    )
+    assert gqa_proj(x_d).shape == (1, 2, 4)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
-from typing import Protocol, Union, runtime_checkable
+from typing import Literal, Protocol, Union, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from ml_switcheroo_ir import AttributeValue
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from zero_pax import _tensor_ops as _ops
 from zero_pax.types import (
@@ -14,6 +16,7 @@ from zero_pax.types import (
     CallableLayer,
     CallableLayerProtocol,
     DType,
+    LayerOutput,
     PaxConfig,
     StrictCallableLayerProtocol,
     Tensor,
@@ -21,6 +24,8 @@ from zero_pax.types import (
     WeightInit,
     WeightSharding,
 )
+
+_SHARED_WEIGHT_REGISTRY: dict[tuple[str, str, tuple[int, ...]], Tensor] = {}
 
 
 class BasePraxisLayer(BaseModel):
@@ -37,11 +42,12 @@ class BasePraxisLayer(BaseModel):
         mesh_axis_names: Logical names for each device mesh axis.
         shared_weight_layer_id: Identifier for weight sharing across layers.
         weight_split_dims_mapping: Sharding specification for layer parameters.
-        activation_split_dims_mapping: Sharding specification for layer activations.
+        activation_split_dims_mapping: Activation sharding specification.
         parent: Optional parent layer in the module hierarchy.
         name: Optional instance name of the layer.
         params: Dictionary of registered `BaseParameter` instances on this layer.
         sublayers: Dictionary of instantiated child `CallableLayer` instances keyed by name.
+        _is_setup: Private boolean tracking whether `setup()` has been invoked on this instance.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -63,6 +69,44 @@ class BasePraxisLayer(BaseModel):
     name: str | None = None
     params: dict[str, BaseParameter] = Field(default_factory=dict, exclude=True)
     sublayers: dict[str, CallableLayer] = Field(default_factory=dict, exclude=True)
+    _is_setup: bool = PrivateAttr(default=False)
+
+    def _ensure_setup(self) -> None:
+        """Invoke `self.setup()` once prior to parameter or sub-layer resolution."""
+        if not self._is_setup:
+            self._is_setup = True
+            self.setup()
+
+    def _build_ir_metadata(self) -> dict[str, AttributeValue]:
+        """Collect sharding, mesh, and regularization metadata for IR node annotations.
+
+        Returns:
+            Dictionary of serializable `AttributeValue` metadata entries.
+        """
+        meta: dict[str, AttributeValue] = {}
+        if self.skip_lp_regularization is not None:
+            meta["skip_lp_regularization"] = bool(self.skip_lp_regularization)
+        if self.ici_mesh_shape is not None:
+            meta["ici_mesh_shape"] = [int(d) for d in self.ici_mesh_shape]
+        if self.dcn_mesh_shape is not None:
+            meta["dcn_mesh_shape"] = [int(d) for d in self.dcn_mesh_shape]
+        if self.contiguous_submeshes is not None:
+            meta["contiguous_submeshes"] = bool(self.contiguous_submeshes)
+        if self.mesh_axis_names is not None:
+            meta["mesh_axis_names"] = [str(ax) for ax in self.mesh_axis_names]
+        if self.shared_weight_layer_id is not None:
+            meta["shared_weight_layer_id"] = self.shared_weight_layer_id
+        if (
+            self.weight_split_dims_mapping is not None
+            and self.weight_split_dims_mapping.wt is not None
+        ):
+            meta["weight_sharding"] = str(list(self.weight_split_dims_mapping.wt))
+        if (
+            self.activation_split_dims_mapping is not None
+            and self.activation_split_dims_mapping.out is not None
+        ):
+            meta["activation_sharding"] = str(list(self.activation_split_dims_mapping.out))
+        return meta
 
     @property
     def effective_fprop_dtype(self) -> DType:
@@ -82,6 +126,7 @@ class BasePraxisLayer(BaseModel):
         Returns:
             Converted `Tensor`.
         """
+        self._ensure_setup()
         if self.fprop_dtype is not None:
             return _ops.asarray(x, dtype=self.fprop_dtype)
         return _ops.asarray(x)
@@ -114,10 +159,14 @@ class BasePraxisLayer(BaseModel):
         Returns:
             Initialized `Tensor` stored in `self.params[name]`.
         """
+        self._ensure_setup()
+        target_shape = tuple(int(d) for d in shape)
         initializer = init if init is not None else (self.params_init or WeightInit(method="zeros"))
-        tensor = initializer.init_tensor(shape, dtype=self.dtype)
+        tensor = initializer.init_tensor(target_shape, dtype=self.dtype)
+        if self.shared_weight_layer_id:
+            _SHARED_WEIGHT_REGISTRY[(self.shared_weight_layer_id, name, target_shape)] = tensor
         self.register_parameter(name, tensor)
-        return tensor
+        return _ops.register_graph_input(tensor, name=name, metadata=self._build_ir_metadata())
 
     def get_variable(
         self,
@@ -137,21 +186,39 @@ class BasePraxisLayer(BaseModel):
         Returns:
             Resolved `Tensor` parameter.
         """
+        self._ensure_setup()
         target_shape = tuple(int(d) for d in shape)
         if explicit is not None:
-            return _ops.asarray(explicit)
+            exp_t = _ops.asarray(explicit)
+            return _ops.register_graph_input(exp_t, name=name, metadata=self._build_ir_metadata())
         if name in self.params:
             cached = _ops.asarray(self.params[name]())
             if cached.shape == target_shape:
-                return cached
+                return _ops.register_graph_input(
+                    cached, name=name, metadata=self._build_ir_metadata()
+                )
+        if self.shared_weight_layer_id:
+            shared_key = (self.shared_weight_layer_id, name, target_shape)
+            if shared_key in _SHARED_WEIGHT_REGISTRY:
+                shared_t = _SHARED_WEIGHT_REGISTRY[shared_key]
+                self.params[name] = BaseParameter(shared_t)
+                return _ops.register_graph_input(
+                    shared_t, name=name, metadata=self._build_ir_metadata()
+                )
         if self.parent is not None:
-            prefix = f"{self.name}/" if self.name else ""
-            scoped_name = f"{prefix}{name}"
-            if scoped_name in self.parent.params:
-                resolved = _ops.asarray(self.parent.params[scoped_name]())
-                if resolved.shape == target_shape:
-                    self.params[name] = BaseParameter(resolved)
-                    return resolved
+            curr: BasePraxisLayer | None = self
+            scoped_name = name
+            while curr is not None and curr.parent is not None:
+                prefix = f"{curr.name}/" if curr.name else ""
+                scoped_name = f"{prefix}{scoped_name}"
+                curr = curr.parent
+                if scoped_name in curr.params:
+                    resolved = _ops.asarray(curr.params[scoped_name]())
+                    if resolved.shape == target_shape:
+                        self.params[name] = BaseParameter(resolved)
+                        return _ops.register_graph_input(
+                            resolved, name=name, metadata=self._build_ir_metadata()
+                        )
         return self.create_variable(name, shape, init=init)
 
     def get_sublayer(
@@ -170,6 +237,7 @@ class BasePraxisLayer(BaseModel):
         Returns:
             Resolved and parent-linked `StrictCallableLayerProtocol`.
         """
+        self._ensure_setup()
         resolved = instantiate_layer(tpl, default, parent=self, name=name)
         self.sublayers[name] = resolved
         return resolved
@@ -275,12 +343,28 @@ class _CallableFnAdapter:
     """Adapter wrapping a callable template into a `StrictCallableLayerProtocol`."""
 
     def __init__(self, fn: CallableLayer) -> None:
-        """Initialize the adapter with `fn`.
+        """Initialize the adapter with `fn` and precompute its positional arity mode.
 
         Args:
             fn: Underlying function or callable layer.
         """
         self._fn = fn
+        sig = inspect.signature(fn)
+        has_var_pos = any(
+            p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()
+        )
+        pos_params = [
+            p
+            for p in sig.parameters.values()
+            if p.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if not has_var_pos and len(pos_params) == 1:
+            self._arity_mode: Literal["unary", "binary", "varargs"] = "unary"
+        elif not has_var_pos and len(pos_params) == 2:
+            self._arity_mode = "binary"
+        else:
+            self._arity_mode = "varargs"
 
     def __call__(
         self,
@@ -299,23 +383,10 @@ class _CallableFnAdapter:
         Returns:
             Result converted to `Tensor`.
         """
-        import inspect
-
-        sig = inspect.signature(self._fn)
-        has_var_pos = any(
-            p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()
-        )
-        pos_params = [
-            p
-            for p in sig.parameters.values()
-            if p.kind
-            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        ]
-        if not has_var_pos and len(pos_params) == 1 and isinstance(self._fn, _UnaryFnProtocol):
+        if self._arity_mode == "unary" and isinstance(self._fn, _UnaryFnProtocol):
             return _ops.asarray(self._fn(inputs))
         if (
-            not has_var_pos
-            and len(pos_params) == 2
+            self._arity_mode == "binary"
             and len(args) >= 1
             and isinstance(self._fn, _BinaryFnProtocol)
         ):
@@ -357,8 +428,13 @@ def instantiate_layer(
         raw = tpl
 
     if isinstance(raw, BasePraxisLayer):
-        if parent is not None and raw.parent is None:
-            raw.parent = parent
+        if parent is not None:
+            if raw.parent is None:
+                raw.parent = parent
+            if raw.dtype == "float32" and parent.dtype != "float32":
+                raw.dtype = parent.dtype
+            if raw.fprop_dtype is None and parent.fprop_dtype is not None:
+                raw.fprop_dtype = parent.fprop_dtype
         if name is not None and raw.name is None:
             raw.name = name
         return raw
@@ -368,6 +444,7 @@ def instantiate_layer(
 
 __all__ = [
     "BasePraxisLayer",
+    "LayerOutput",
     "LayerTpl",
     "as_tensor_if_present",
     "instantiate_layer",

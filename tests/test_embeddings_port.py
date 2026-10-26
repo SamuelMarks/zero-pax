@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-from tests import conftest as jnp
+import pytest
+
 from tests import conftest as np
+from zero_pax import _tensor_ops as t_ops
 from zero_pax.praxis.layers import (
     BiTemperedLoss,
+    EinsumOp,
     Embedding,
     FullSoftmax,
     GShardSharedEmbeddingSoftmax,
+    Identity,
+    Linear,
     PositionalEmbedding,
     PositionalEmbedding2D,
     SharedEmbeddingSoftmax,
     SigmoidCrossEntropy,
     TrainablePositionalEmbedding,
 )
+from zero_pax.types import WeightInit
 
 
 def test_embedding_and_shared_embedding() -> None:
@@ -138,26 +144,26 @@ def test_softmax_cross_entropy_and_bitempered() -> None:
 
     sce = SigmoidCrossEntropy(soft_cap_logits=10.0)
     sig_probs = sce(logits, b=np.zeros((3,), dtype=np.float32))
-    capped = 10.0 * jnp.tanh(logits / 10.0)
-    np.testing.assert_allclose(sig_probs, 1.0 / (1.0 + jnp.exp(-capped)), atol=1e-5)
+    capped = 10.0 * np.tanh(logits / 10.0)
+    np.testing.assert_allclose(sig_probs, 1.0 / (1.0 + np.exp(-capped)), atol=1e-5)
 
     sce_loss = sce(
         logits,
         class_ids=np.array([0, 1], dtype=np.int32),
         class_weights=np.ones((2, 3), dtype=np.float32),
     )
-    y_one_hot = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=jnp.float32)
-    ref_bce = jnp.maximum(capped, 0.0) - capped * y_one_hot + jnp.log1p(jnp.exp(-jnp.abs(capped)))
+    y_one_hot = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    ref_bce = np.maximum(capped, 0.0) - capped * y_one_hot + np.log1p(np.exp(-np.abs(capped)))
     np.testing.assert_allclose(sce_loss, ref_bce, atol=1e-5)
 
     bt_default = BiTemperedLoss(t1=1.0, t2=1.0)
     bt_probs = bt_default(logits)
-    ref_probs = jnp.exp(logits) / jnp.sum(jnp.exp(logits), axis=-1, keepdims=True)
+    ref_probs = np.ref_softmax(logits, axis=-1)
     np.testing.assert_allclose(bt_probs, ref_probs, atol=1e-5)
 
     labels_one_hot = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
     bt_ce_loss = bt_default(logits, labels=labels_one_hot)
-    ref_ce_loss = -jnp.sum(labels_one_hot * jnp.log(ref_probs), axis=-1)
+    ref_ce_loss = -np.sum(labels_one_hot * np.ref_log_softmax(logits, axis=-1), axis=-1)
     np.testing.assert_allclose(bt_ce_loss, ref_ce_loss, atol=1e-5)
 
     bt_tempered = BiTemperedLoss(t1=0.8, t2=1.2, label_smoothing=0.1)
@@ -166,3 +172,232 @@ def test_softmax_cross_entropy_and_bitempered() -> None:
     )
     assert bt_loss.shape == (2,)
     assert float(bt_loss[0]) > float(bt_loss[1]) > 0.0
+
+    with pytest.raises(ValueError, match="INDEX or MATMUL"):
+        Embedding(lookup_style="INVALID")([[0, 1]])
+
+    emb_custom_lookup = Embedding(
+        num_classes=4,
+        input_dims=2,
+        lookup_style="INDEX",
+        array_lookup_tpl=EinsumOp(equation="...v,vd->...d"),
+    )
+    np.testing.assert_allclose(
+        emb_custom_lookup([[0, 1]], w=np.ones((4, 2), dtype=np.float32)),
+        np.ones((1, 2, 2)),
+    )
+    emb_custom_fn = Embedding(
+        num_classes=4,
+        input_dims=2,
+        lookup_style="INDEX",
+        array_lookup_tpl=lambda ids: t_ops.ones((1, 2, 2)),
+    )
+    np.testing.assert_allclose(emb_custom_fn([[0, 1]]), np.ones((1, 2, 2)))
+    emb_custom_ein = Embedding(
+        num_classes=4,
+        input_dims=2,
+        lookup_style="MATMUL",
+        einsum_tpl=lambda oh, w_in: t_ops.einsum("...v,vd->...d", oh, w_in),
+    )
+    np.testing.assert_allclose(
+        emb_custom_ein([[0, 1]], w=np.ones((4, 2), dtype=np.float32)),
+        np.ones((1, 2, 2)),
+    )
+
+    shared = SharedEmbeddingSoftmax(
+        num_classes=4,
+        input_dims=4,
+        use_bias=False,
+        soft_cap_logits=0.0,
+        ais_temperature=2.0,
+        feed_forward_tpl=Identity(),
+    )
+    np.testing.assert_allclose(
+        shared(np.ones((1, 2, 4), dtype=np.float32)),
+        np.full((1, 2, 4), 0.5),
+    )
+
+    gshard_loss = GShardSharedEmbeddingSoftmax(
+        num_classes=3, input_dims=2, label_smoothing_prob=0.1, z_loss_weight=0.01
+    )
+    loss_gs = gshard_loss(
+        np.ones((1, 2, 2), dtype=np.float32),
+        w=np.ones((2, 3), dtype=np.float32),
+        class_ids=np.array([[0, 1]], dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        loss_gs,
+        np.full((1, 2), np.log(3.0) + 0.01 * ((2.0 + np.log(3.0)) ** 2)),
+        atol=1e-4,
+    )
+
+    assert PositionalEmbedding(embedding_dims=4)(seq_length=t_ops.asarray(3)).shape == (1, 3, 4)
+    assert PositionalEmbedding(embedding_dims=4)(seq_length=t_ops.zeros((3,))).shape == (1, 3, 4)
+    assert PositionalEmbedding(embedding_dims=4)(position=t_ops.arange(3)).shape == (1, 3, 4)
+
+    shared_no_ff = SharedEmbeddingSoftmax(num_classes=4, input_dims=2, use_bias=False)
+    np.testing.assert_allclose(
+        shared_no_ff.emb_lookup(
+            np.array([[0, 1]], dtype=np.int32), w=np.ones((4, 2), dtype=np.float32)
+        ),
+        np.ones((1, 2, 2)),
+    )
+    np.testing.assert_allclose(
+        shared_no_ff(np.ones((1, 2, 2), dtype=np.float32)), np.zeros((1, 2, 4))
+    )
+
+    pe2d_trunc = PositionalEmbedding2D(h=2, w=2, embedding_dims=3)()
+    assert pe2d_trunc.shape == (1, 4, 3)
+    assert PositionalEmbedding2D(
+        h=2, w=2, embedding_dims=4, pos_transform="hwd->(wh)d"
+    )().shape == (
+        1,
+        4,
+        4,
+    )
+    assert PositionalEmbedding2D(h=2, w=2, embedding_dims=4, pos_transform="hwd->hwd")().shape == (
+        1,
+        2,
+        2,
+        4,
+    )
+
+    pe2d_pad = PositionalEmbedding2D(h=2, w=2, embedding_dims=5)()
+    assert pe2d_pad.shape == (1, 4, 5)
+    np.testing.assert_allclose(pe2d_pad[:, :, 4:], 0.0)
+    pe2d_pos = PositionalEmbedding2D(h=2, w=2, embedding_dims=4)(position=np.array([0, 2]))
+    np.testing.assert_allclose(
+        pe2d_pos[0, 0], PositionalEmbedding2D(h=2, w=2, embedding_dims=4)()[0, 0]
+    )
+    assert PositionalEmbedding2D(h=2, w=2, embedding_dims=4)(seq_length=2).shape == (1, 2, 4)
+    assert PositionalEmbedding2D(h=2, w=2, embedding_dims=4)(seq_length=6).shape == (1, 6, 4)
+
+    tpe_default = TrainablePositionalEmbedding(max_seq_length=4, embedding_dims=2)
+    np.testing.assert_allclose(tpe_default(), np.zeros((1, 4, 2)))
+    tpe_custom_ein = TrainablePositionalEmbedding(
+        max_seq_length=4,
+        embedding_dims=2,
+        einsum_tpl=lambda oh, w_in: t_ops.einsum("btv,vd->btd", oh, w_in),
+    )
+    np.testing.assert_allclose(tpe_custom_ein(seq_length=2), np.zeros((1, 2, 2)))
+
+    sm_bt = FullSoftmax(
+        input_dims=2,
+        num_classes=3,
+        use_bias=False,
+        scale_before_logits=2.0,
+        ais_temperature=2.0,
+        bi_tempered_loss_tpl=BiTemperedLoss(t1=1.0, t2=1.0),
+    )
+    probs_2d = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    loss_probs = sm_bt(
+        np.zeros((2, 2), dtype=np.float32),
+        class_probabilities=probs_2d,
+        class_weights=np.array([1.0, 1.0], dtype=np.float32),
+    )
+    np.testing.assert_allclose(loss_probs, np.full((2,), np.log(3.0)), atol=1e-5)
+
+    sm_ff = FullSoftmax(
+        input_dims=2, num_classes=3, feed_forward_tpl=Linear(input_dims=2, output_dims=3)
+    )
+    np.testing.assert_allclose(sm_ff(np.ones((2, 2), dtype=np.float32)), np.full((2, 3), 1.0 / 3.0))
+
+    sce_proj = SigmoidCrossEntropy(input_dims=2, num_classes=3, soft_cap_logits=0.0)
+    out_sce_proj = sce_proj(
+        np.ones((2, 2), dtype=np.float32),
+        w=np.zeros((2, 3), dtype=np.float32),
+        b=np.zeros((3,), dtype=np.float32),
+    )
+    np.testing.assert_allclose(out_sce_proj, np.full((2, 3), 0.5), atol=1e-5)
+
+    sce_no_b = SigmoidCrossEntropy(input_dims=2, num_classes=3, soft_cap_logits=0.0)
+    np.testing.assert_allclose(
+        sce_no_b(np.ones((2, 2), dtype=np.float32), w=np.zeros((2, 3), dtype=np.float32)),
+        np.full((2, 3), 0.5),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        sce_no_b(
+            np.zeros((2, 3), dtype=np.float32),
+            labels=np.ones((2, 3), dtype=np.float32),
+            class_weights=np.full((2, 3), 2.0, dtype=np.float32),
+        ),
+        np.full((2, 3), 2.0 * np.log(2.0)),
+        atol=1e-5,
+    )
+
+    sce_ff = SigmoidCrossEntropy(
+        input_dims=2,
+        num_classes=3,
+        feed_forward_tpl=Linear(input_dims=2, output_dims=3),
+        bias_init=WeightInit(method="zeros"),
+    )
+    np.testing.assert_allclose(
+        sce_ff(np.ones((2, 2), dtype=np.float32)), np.full((2, 3), 0.5), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        SigmoidCrossEntropy()(
+            np.zeros((2, 3), dtype=np.float32),
+            labels=np.ones((2, 3), dtype=np.float32),
+        ),
+        np.full((2, 3), np.log(2.0)),
+        atol=1e-5,
+    )
+
+    with pytest.raises(ValueError, match="Embedding weight shape"):
+        Embedding(num_classes=4, input_dims=2)([[0, 1]], w=np.ones((3, 2), dtype=np.float32))
+    assert Embedding(num_classes=0, input_dims=0)(
+        [[0, 1]], w=np.ones((4, 3), dtype=np.float32)
+    ).shape == (1, 2, 3)
+
+    gs_cw = GShardSharedEmbeddingSoftmax(
+        num_classes=3,
+        input_dims=2,
+        use_tgt_labels_size_as_loss_denominator=False,
+    )
+    loss_gs_cw = gs_cw(
+        np.zeros((1, 2, 2), dtype=np.float32),
+        w=np.zeros((2, 3), dtype=np.float32),
+        class_ids=np.array([[0, 1]], dtype=np.int32),
+        class_weights=np.array([[2.0, 2.0]], dtype=np.float32),
+    )
+    np.testing.assert_allclose(loss_gs_cw, np.full((1, 2), np.log(3.0) * 0.5), atol=1e-5)
+
+    tpe_idx_lookup = TrainablePositionalEmbedding(
+        max_seq_length=4,
+        embedding_dims=2,
+        lookup_style="INDEX",
+        array_lookup_tpl=EinsumOp(equation="btv,vd->btd"),
+    )
+    assert tpe_idx_lookup(seq_length=2).shape == (1, 2, 2)
+    tpe_idx_fn = TrainablePositionalEmbedding(
+        max_seq_length=4,
+        embedding_dims=2,
+        lookup_style="INDEX",
+        array_lookup_tpl=lambda p: t_ops.zeros((1, 2, 2)),
+    )
+    assert tpe_idx_fn(seq_length=2).shape == (1, 2, 2)
+
+    sm_chunk = FullSoftmax(
+        input_dims=2,
+        num_classes=3,
+        chunk_size=1,
+        label_smoothing_prob=0.2,
+        label_smoothing_apply_for_eval=False,
+    )
+    probs_chunk = sm_chunk(np.zeros((2, 3), dtype=np.float32))
+    np.testing.assert_allclose(probs_chunk, np.full((2, 3), 1.0 / 3.0), atol=1e-5)
+    loss_eval = sm_chunk(
+        np.zeros((2, 3), dtype=np.float32),
+        class_ids=np.array([0, 1], dtype=np.int32),
+        is_eval=True,
+    )
+    np.testing.assert_allclose(loss_eval, np.full((2,), np.log(3.0)), atol=1e-5)
+
+    bt_sched = BiTemperedLoss(t1=0.8, t2=1.2, start_step=10, end_step=20)
+    loss_step15 = bt_sched(
+        np.array([[2.0, 0.0], [0.0, 2.0]], dtype=np.float32),
+        labels=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+        step=15,
+    )
+    assert loss_step15.shape == (2,)

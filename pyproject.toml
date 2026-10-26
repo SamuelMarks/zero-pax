@@ -42,6 +42,11 @@ source = ["src/zero_pax"]
 [tool.coverage.report]
 fail_under = 100
 show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if typing.TYPE_CHECKING:",
+]
 
 [tool.mypy]
 python_version = "3.10"

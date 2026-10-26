@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests import conftest as jnp
 from tests import conftest as np
+from zero_pax import _tensor_ops as t_ops
 from zero_pax.praxis.layers import (
     GELU,
     Bias,
@@ -20,13 +20,14 @@ from zero_pax.praxis.layers import (
     Pooling,
     Pooling1D,
 )
+from zero_pax.types import WeightInit
 
 
 def test_linear_and_bias() -> None:
-    """Verify `Linear` and `Bias` layers match `jax.numpy` matrix multiplication and addition."""
-    x = np.random.normal(size=(2, 3, 4)).astype(np.float32)
-    w = np.random.normal(size=(4, 5)).astype(np.float32)
-    b = np.random.normal(size=(5,)).astype(np.float32)
+    """Verify `Linear` and `Bias` layers match independent pure-Python matrix multiplication and addition."""
+    x = np.random.normal(size=(2, 3, 4), seed=11).astype(np.float32)
+    w = np.random.normal(size=(4, 5), seed=22).astype(np.float32)
+    b = np.random.normal(size=(5,), seed=33).astype(np.float32)
 
     linear = Linear(input_dims=4, output_dims=5)
     bias = Bias(dims=5)
@@ -34,12 +35,17 @@ def test_linear_and_bias() -> None:
     out_lin = linear(x, w=w)
     out_bias = bias(out_lin, b=b)
 
-    ref = jnp.einsum("...d,df->...f", x, w) + b
-    np.testing.assert_allclose(out_lin, jnp.einsum("...d,df->...f", x, w), atol=1e-5)
+    ref_lin = np.ref_matmul(x, w)
+    ref = ref_lin + b
+    np.testing.assert_allclose(out_lin, ref_lin, atol=1e-5)
     np.testing.assert_allclose(out_bias, ref, atol=1e-5)
 
     np.testing.assert_allclose(Linear()(x), np.zeros((2, 3, 4)), atol=1e-6)
     np.testing.assert_allclose(Bias()(x), x, atol=1e-6)
+    with pytest.raises(ValueError, match="Linear expected last dimension"):
+        Linear(input_dims=6, output_dims=5)(x)
+    with pytest.raises(ValueError, match="Linear weight input dimension"):
+        Linear(input_dims=4, output_dims=5)(x, w=np.ones((3, 5), dtype=np.float32))
 
 
 def test_einsum_and_einsum_op() -> None:
@@ -48,26 +54,26 @@ def test_einsum_and_einsum_op() -> None:
     y = np.array([[1.0, 0.0], [0.5, 2.0], [-1.0, 1.0]], dtype=np.float32)
 
     op = EinsumOp(equation="bd,df->bf")
-    np.testing.assert_allclose(op(x, y), jnp.einsum("bd,df->bf", x, y), atol=1e-5)
+    np.testing.assert_allclose(op(x, y), np.einsum("bd,df->bf", x, y), atol=1e-5)
     np.testing.assert_allclose(
-        EinsumOp()("bd,df->bf", x, y), jnp.einsum("bd,df->bf", x, y), atol=1e-5
+        EinsumOp()("bd,df->bf", x, y), np.einsum("bd,df->bf", x, y), atol=1e-5
     )
     np.testing.assert_allclose(EinsumOp()(), np.zeros((1,)), atol=1e-6)
     np.testing.assert_allclose(EinsumOp()(x), x, atol=1e-6)
 
     ein_t2 = Einsum(eqn="bd,df->bf")
-    np.testing.assert_allclose(ein_t2(x, t2=y), jnp.einsum("bd,df->bf", x, y), atol=1e-5)
+    np.testing.assert_allclose(ein_t2(x, t2=y), np.einsum("bd,df->bf", x, y), atol=1e-5)
 
     b_vec = np.array([0.5, -0.5], dtype=np.float32)
     ein_w = Einsum(eqn="bd,df->bf", w_shape=(3, 2), use_bias=True, bias_shape=(2,))
     np.testing.assert_allclose(
-        ein_w(x, w=y, b=b_vec), jnp.einsum("bd,df->bf", x, y) + b_vec, atol=1e-5
+        ein_w(x, w=y, b=b_vec), np.einsum("bd,df->bf", x, y) + b_vec, atol=1e-5
     )
     np.testing.assert_allclose(ein_w(x), np.zeros((2, 2)), atol=1e-6)
 
     ein_default = Einsum(equation="bd,df->bf", use_bias=True)
     np.testing.assert_allclose(
-        ein_default(x), jnp.einsum("bd,df->bf", x, np.ones((3, 3))), atol=1e-5
+        ein_default(x), np.einsum("bd,df->bf", x, np.ones((3, 3))), atol=1e-5
     )
     np.testing.assert_allclose(Einsum()(x), x, atol=1e-6)
 
@@ -110,10 +116,12 @@ def test_feedforward_and_mlp_block() -> None:
         output_dims=4,
         weight_init=WeightInit(method="ones", scale=1.0),
         bias_init=WeightInit(method="ones", scale=2.0),
+        checkpoint_str="all",
     )
     np.testing.assert_allclose(
         ff_inits(np.ones((2, 4), dtype=np.float32)), np.full((2, 4), 6.0), atol=1e-5
     )
+    assert "checkpoint_policy" in ff_inits.params
 
 
 def test_per_dim_scale() -> None:
@@ -225,3 +233,63 @@ def test_global_pooling() -> None:
         GlobalPooling(pooling_dims=[5])(x)
     with pytest.raises(ValueError, match="MAX or AVG"):
         GlobalPooling(pooling_dims=[1], pooling_type="BAD")(x)
+    with pytest.raises(ValueError, match="MAX or AVG"):
+        Pooling1D(pooling_type="BAD")(x)
+
+    ein_vec = Einsum(eqn="bd,d->b")
+    np.testing.assert_allclose(ein_vec(np.array([[1.0, 2.0]], dtype=np.float32)), [3.0])
+
+    ein_custom = Einsum(
+        eqn="bd,df->bf",
+        w_shape=(2, 2),
+        use_bias=False,
+        einsum_op_tpl=lambda x_in, w_in: t_ops.matmul(x_in, w_in),
+    )
+    np.testing.assert_allclose(
+        ein_custom(np.ones((2, 2), dtype=np.float32), t2=np.eye(2, dtype=np.float32)),
+        np.ones((2, 2)),
+    )
+    np.testing.assert_allclose(
+        ein_custom(np.ones((2, 2), dtype=np.float32), w=np.eye(2, dtype=np.float32)),
+        np.ones((2, 2)),
+    )
+
+    lin_custom = Linear(
+        input_dims=2, output_dims=2, einsum_tpl=lambda x_in, w_in: t_ops.matmul(x_in, w_in)
+    )
+    np.testing.assert_allclose(
+        lin_custom(np.array([[2.0, 3.0]], dtype=np.float32), w=np.eye(2, dtype=np.float32)),
+        np.array([[2.0, 3.0]]),
+    )
+
+    ff_custom = FeedForward(input_dims=2, output_dims=2, linear_tpl=Identity(), bias_tpl=Identity())
+    np.testing.assert_allclose(
+        ff_custom(np.array([[-1.0, 2.0]], dtype=np.float32)), np.array([[0.0, 2.0]])
+    )
+
+    pool_avg_valid = Pooling(
+        window_shape=(2, 2), window_stride=(1, 1), pooling_type="AVG", padding="VALID"
+    )
+    res_pv = pool_avg_valid(
+        np.ones((1, 3, 3, 2), dtype=np.float32) * 4.0,
+        paddings=np.array([[0.0, 0.0, 1.0]], dtype=np.float32),
+    )
+    assert isinstance(res_pv, tuple)
+    np.testing.assert_allclose(res_pv[0][:, 0, 0, :], np.array([[4.0, 4.0]]))
+
+    gp_all_pad = GlobalPooling(pooling_type="AVG", pooling_dims=[1], keepdims=False)
+    out_all_pad = gp_all_pad(
+        np.ones((1, 3, 2), dtype=np.float32),
+        compatible_paddings=np.ones((1, 3, 1), dtype=np.float32),
+    )
+    np.testing.assert_allclose(out_all_pad, np.zeros((1, 2)))
+
+    mlp_custom_ff = MLPBlock(
+        num_layers=1,
+        hidden_dims=4,
+        has_bias=False,
+        fflayer_tpl=Linear(input_dims=4, output_dims=4, weight_init=WeightInit(method="ones")),
+    )
+    np.testing.assert_allclose(
+        mlp_custom_ff(np.ones((1, 4), dtype=np.float32)), np.full((1, 4), 4.0)
+    )

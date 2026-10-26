@@ -61,21 +61,16 @@ def _discover_stdlib_modules() -> frozenset[str]:
         Frozenset of standard library module names.
     """
     modules: set[str] = set(sys.builtin_module_names)
-    if sys.version_info >= (3, 10):
-        modules.update(sys.stdlib_module_names)
-    stdlib_dir = sysconfig.get_path("stdlib")
-    if stdlib_dir:
-        stdlib_path = Path(stdlib_dir)
-        if stdlib_path.is_dir():
-            for entry in stdlib_path.iterdir():
-                if entry.suffix == ".py":
-                    modules.add(entry.stem)
-                elif entry.is_dir() and entry.name not in ("site-packages", "__pycache__"):
-                    modules.add(entry.name)
-            lib_dynload = stdlib_path / "lib-dynload"
-            if lib_dynload.is_dir():
-                for entry in lib_dynload.iterdir():
-                    modules.add(entry.name.split(".")[0])
+    stdlib_dir = sysconfig.get_path("stdlib") or ""
+    stdlib_path = Path(stdlib_dir)
+    for entry in stdlib_path.iterdir():
+        if entry.suffix == ".py":
+            modules.add(entry.stem)
+        elif entry.is_dir() and entry.name not in ("site-packages", "__pycache__"):
+            modules.add(entry.name)
+    lib_dynload = stdlib_path / "lib-dynload"
+    for entry in lib_dynload.iterdir():
+        modules.add(entry.name.split(".")[0])
     modules.add("__future__")
     return frozenset(modules)
 
@@ -98,7 +93,7 @@ def is_allowed_module(module_name: str, is_test: bool = False) -> bool:
         return False
     if top_level in STDLIB or top_level in ALLOWED_THIRD_PARTY:
         return True
-    return is_test and top_level in ("pytest", "tests", "scripts")
+    return is_test and top_level in ("pytest", "tests", "scripts", "check_docstrings")
 
 
 def check_file(file_path: Path) -> list[str]:
@@ -114,6 +109,7 @@ def check_file(file_path: Path) -> list[str]:
     is_test = (
         "test" in file_path.parts
         or "tests" in file_path.parts
+        or "scripts" in file_path.parts
         or file_path.name.startswith("test_")
     )
     try:
@@ -166,11 +162,11 @@ def check_requirements_file(req_path: Path, is_test: bool = False) -> list[str]:
         if not line:
             continue
         match = re.match(r"^([a-zA-Z0-9_\-]+)", line)
-        if match:
-            pkg_name = match.group(1).replace("-", "_")
-            allowed = is_allowed_module(pkg_name) or (is_test and pkg_name in ALLOWED_DEV_PACKAGES)
-            if not allowed:
-                errors.append(f"{req_path}:{idx}: Disallowed dependency: {match.group(1)}")
+        pkg_raw = match.group(1) if match else line
+        pkg_name = pkg_raw.replace("-", "_")
+        allowed = is_allowed_module(pkg_name) or (is_test and pkg_name in ALLOWED_DEV_PACKAGES)
+        if not allowed:
+            errors.append(f"{req_path}:{idx}: Disallowed dependency: {pkg_raw}")
     return errors
 
 

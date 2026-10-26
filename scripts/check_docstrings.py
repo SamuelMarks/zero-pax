@@ -90,11 +90,11 @@ def _is_none_return(returns_node: ast.expr | None) -> bool:
     Returns:
         True if the return annotation is absent or `None`.
     """
-    if returns_node is None:
-        return True
-    if isinstance(returns_node, ast.Constant) and returns_node.value is None:
-        return True
-    return isinstance(returns_node, ast.Name) and returns_node.id == "None"
+    return (
+        returns_node is None
+        or (isinstance(returns_node, ast.Constant) and returns_node.value is None)
+        or (isinstance(returns_node, ast.Name) and returns_node.id == "None")
+    )
 
 
 def _function_directly_raises(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:

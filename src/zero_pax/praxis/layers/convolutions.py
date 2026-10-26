@@ -9,6 +9,7 @@ from zero_pax.praxis.base import BasePraxisLayer, LayerTpl
 from zero_pax.praxis.layers.activations import Identity, ReLU, Swish
 from zero_pax.praxis.layers.linear_pooling import EinsumOp, Linear
 from zero_pax.praxis.layers.normalizations import BatchNorm, LayerNorm
+from zero_pax.praxis.layers.quantization_utils import Dropout
 from zero_pax.types import (
     PoolingOutput,
     Tensor,
@@ -92,8 +93,13 @@ class Conv2D(BasePraxisLayer):
 
         Returns:
             Convolved 4D `Tensor` of shape `[B, H_out, W_out, C_out]`.
+
+        Raises:
+            ValueError: If `inputs` is not 4D or if explicit `w` shape does not match `(fh, fw, f_in, f_out)`.
         """
         x = self._to_tensor(inputs)
+        if x.ndim != 4:
+            raise ValueError(f"Conv2D expected 4D input [B, H, W, C], got shape {x.shape}")
         b_sz, h_in, w_in, c_in = x.shape
 
         if paddings is not None:
@@ -106,6 +112,10 @@ class Conv2D(BasePraxisLayer):
             fh, fw, f_in, f_out = self.filter_shape
 
         w_t = self.get_variable("w", (fh, fw, f_in, f_out), explicit=w, init=self.kernel_init)
+        if w_t.shape != (fh, fw, f_in, f_out):
+            raise ValueError(
+                f"Conv2D explicit filter shape {w_t.shape} does not match expected {(fh, fw, f_in, f_out)}"
+            )
         if self.weight_norm_tpl is not None:
             wn_layer = self.get_sublayer("weight_norm", self.weight_norm_tpl, Identity())
             w_t = wn_layer(w_t)
@@ -123,8 +133,14 @@ class Conv2D(BasePraxisLayer):
         if self.padding == "SAME":
             out_h = (h_in + sh - 1) // sh
             out_w = (w_in + sw - 1) // sw
-            pad_h = max((out_h - 1) * sh + eff_fh - h_in, 0)
-            pad_w = max((out_w - 1) * sw + eff_fw - w_in, 0)
+            if self.tf_equivalent_padding and h_in % sh == 0:
+                pad_h = max(eff_fh - sh, 0)
+            else:
+                pad_h = max((out_h - 1) * sh + eff_fh - h_in, 0)
+            if self.tf_equivalent_padding and w_in % sw == 0:
+                pad_w = max(eff_fw - sw, 0)
+            else:
+                pad_w = max((out_w - 1) * sw + eff_fw - w_in, 0)
             if self.is_causal:
                 pad_top = pad_h
                 pad_bottom = 0
@@ -259,6 +275,8 @@ class ConvBNActWithPadding(ConvBNAct):
         out = super().__call__(x, paddings=paddings, w=w, bias=bias)
         if paddings is not None:
             out_pad = self._compute_temporal_output_paddings(_ops.asarray(paddings), x.shape[1])
+            if self.compat_with_lingvo:
+                out = out * (1.0 - _ops.reshape(out_pad, (out.shape[0], out.shape[1], 1, 1)))
             return out, out_pad
         return out
 
@@ -294,6 +312,17 @@ class DepthwiseConv1D(BasePraxisLayer):
         """
         return self.filter_shape[0] if self.filter_shape[0] > 0 else 3
 
+    def _resolve_channel_dims(self, fallback_c: int) -> int:
+        """Resolve the channel dimension size for depthwise weights.
+
+        Args:
+            fallback_c: Input channel dimension size from `inputs.shape[-1]`.
+
+        Returns:
+            Resolved channel dimension size.
+        """
+        return fallback_c
+
     def __call__(
         self,
         inputs: TensorOrScalar,
@@ -321,14 +350,19 @@ class DepthwiseConv1D(BasePraxisLayer):
             pad_t = _ops.asarray(paddings)
             x = x * (1.0 - _ops.expand_dims(pad_t, -1))
 
-        _, t_len, c_in = x.shape
+        _, t_len, c_raw = x.shape
+        c_in = self._resolve_channel_dims(c_raw)
         k_sz = self._resolve_kernel_size()
         dil = self.rhs_dilation_rate if self.rhs_dilation_rate > 0 else 1
         stride = self.filter_stride[0] if (self.filter_stride and self.filter_stride[0] > 0) else 1
 
         w_t: Tensor
         if w is None:
-            w_t = self.get_variable("w", (k_sz, 1, c_in))
+            if self.use_2d_conv_weight_shape:
+                w_4d = self.get_variable("w", (k_sz, 1, c_in, 1))
+                w_t = _ops.reshape(w_4d, (k_sz, 1, c_in))
+            else:
+                w_t = self.get_variable("w", (k_sz, 1, c_in))
         else:
             w_raw = _ops.asarray(w)
             w_t = _ops.reshape(w_raw, (k_sz, 1, c_in)) if w_raw.shape != (k_sz, 1, c_in) else w_raw
@@ -397,6 +431,21 @@ class CausalDepthwiseConv1D(DepthwiseConv1D):
         if self.filter_shape[0] > 0:
             return self.filter_shape[0]
         return self.kernel_size if self.kernel_size > 0 else super()._resolve_kernel_size()
+
+    def _resolve_channel_dims(self, fallback_c: int) -> int:
+        """Resolve the channel dimension from `hidden_dims` when explicitly set.
+
+        Args:
+            fallback_c: Input channel dimension size from `inputs.shape[-1]`.
+
+        Returns:
+            Resolved channel dimension size.
+        """
+        if isinstance(self.hidden_dims, int) and self.hidden_dims > 0:
+            return self.hidden_dims
+        if isinstance(self.hidden_dims, Sequence) and len(self.hidden_dims) > 0:
+            return int(self.hidden_dims[0])
+        return fallback_c
 
 
 class LightConv1D(BasePraxisLayer):
@@ -497,11 +546,20 @@ class LightConv1D(BasePraxisLayer):
         )
 
         bn = self.get_sublayer("conv_norm", self.conv_norm_layer_tpl, BatchNorm(dim=d_model))
-        norm_conv = (
-            bn(conv_out, paddings=paddings, gamma=bn_gamma, beta=bn_beta)
-            if isinstance(bn, BatchNorm)
-            else bn(conv_out)
-        )
+        if self.use_2d_conv_norm:
+            conv_4d = _ops.expand_dims(conv_out, axis=2)
+            norm_4d = (
+                bn(conv_4d, paddings=paddings, gamma=bn_gamma, beta=bn_beta)
+                if isinstance(bn, BatchNorm)
+                else bn(conv_4d)
+            )
+            norm_conv = norm_4d[:, :, 0, :]
+        else:
+            norm_conv = (
+                bn(conv_out, paddings=paddings, gamma=bn_gamma, beta=bn_beta)
+                if isinstance(bn, BatchNorm)
+                else bn(conv_out)
+            )
 
         act_layer = self.get_sublayer("conv_activation", self.conv_activation_tpl, Swish())
         act_out = act_layer(norm_conv)
@@ -513,7 +571,12 @@ class LightConv1D(BasePraxisLayer):
         )
         out = lin_end(act_out, w=w_end) if isinstance(lin_end, Linear) else lin_end(act_out)
 
-        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, Identity())
+        default_drop: BasePraxisLayer = (
+            Dropout(keep_prob=max(0.0, 1.0 - self.dropout_prob))
+            if self.dropout_prob > 0.0
+            else Identity()
+        )
+        drop_layer = self.get_sublayer("dropout", self.dropout_tpl, default_drop)
         out = drop_layer(out)
 
         if paddings is not None:

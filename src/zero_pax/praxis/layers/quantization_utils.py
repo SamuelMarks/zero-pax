@@ -74,7 +74,15 @@ class VectorQuantization(BasePraxisLayer):
         """
         z = self._to_tensor(inputs)
         k_clusters = max(1, self.num_clusters)
-        d_dim = z.shape[-1]
+        d_dim = (
+            self.num_heads * self.dim_per_head
+            if (
+                self.num_heads > 0
+                and self.dim_per_head > 0
+                and z.shape[-1] == self.num_heads * self.dim_per_head
+            )
+            else z.shape[-1]
+        )
 
         cb: Tensor
         if codebook is None:
@@ -99,7 +107,10 @@ class VectorQuantization(BasePraxisLayer):
         dists = z_sq + cb_sq - 2.0 * dot_zc
 
         codes = _ops.argmin(dists, axis=-1)
-        one_hot = _ops.reshape(codes, (-1, 1)) == _ops.arange(cb.shape[0])
+        one_hot = (_ops.reshape(codes, (-1, 1)) == _ops.arange(cb.shape[0])) * 1.0
+        cluster_counts = _ops.sum(one_hot, axis=0)
+        ema_counts = self.decay * _ops.ones((cb.shape[0],)) + (1.0 - self.decay) * cluster_counts
+        self.register_parameter("ema_cluster_size", ema_counts)
         quantized_flat = _ops.einsum("nk,kd->nd", one_hot, cb)
         quantized = _ops.reshape(quantized_flat, z.shape)
         codes_reshaped = _ops.reshape(codes, z.shape[:-1])
@@ -163,20 +174,34 @@ class VectorQuantizer(BasePraxisLayer):
         if codebook is not None:
             cb = _ops.asarray(codebook)
         elif k_cls > 1:
+            init_method = "normal" if self.kmeans_init else "xavier"
             cb = self.get_variable(
                 "codebook",
                 (k_cls, d_dim),
-                init=WeightInit(method="xavier", scale=1.0),
+                init=WeightInit(method=init_method, scale=1.0),
             )
         else:
             cb = None
 
         if cb is not None and self.normalize_codebook:
             cb = _l2_normalize(cb)
-        z_in = _l2_normalize(z) if self.normalize_latent_vector else z
+        if self.normalize_latent_vector:
+            if (
+                self.normalize_latent_per_group
+                and self.num_groups > 1
+                and d_dim % self.num_groups == 0
+            ):
+                g_dim = d_dim // self.num_groups
+                z_grp = _ops.reshape(z, list(z.shape[:-1]) + [self.num_groups, g_dim])
+                z_in = _ops.reshape(_l2_normalize(z_grp), z.shape)
+            else:
+                z_in = _l2_normalize(z)
+        else:
+            z_in = z
 
         vq = VectorQuantization(
             num_clusters=k_cls,
+            num_heads=max(1, self.num_groups),
             dim_per_head=max(
                 1,
                 self.latent_dim if (self.latent_dim is not None and self.latent_dim > 0) else d_dim,
@@ -185,6 +210,8 @@ class VectorQuantizer(BasePraxisLayer):
             name="vq",
         )
         q, c, info = vq(z_in, codebook=cb)
+        if self.EmptyCluster is not None or self.empty_cluster_threshold > 1:
+            self.register_parameter("empty_cluster_threshold", float(self.empty_cluster_threshold))
         raw_loss = info["loss"]
         beta_val = self.beta if self.beta is not None else 0.25
         scaled_loss = raw_loss * (beta_val / 0.25)
@@ -260,7 +287,15 @@ class RandomVectorQuantizer(BasePraxisLayer):
             stacked_res = stacker(z)
             z = stacked_res[0] if isinstance(stacked_res, tuple) else stacked_res
 
-        in_d = z.shape[-1]
+        in_d = (
+            self.latent_dim
+            if (
+                self.latent_dim is not None
+                and self.latent_dim > 0
+                and self.latent_dim == z.shape[-1]
+            )
+            else z.shape[-1]
+        )
         proj_d = (
             _ops.asarray(proj_w).shape[-1]
             if proj_w is not None
@@ -294,22 +329,53 @@ class RandomVectorQuantizer(BasePraxisLayer):
         z_proj = _ops.einsum("...d,dp->...p", z, w_proj)
 
         cb_init = self.codebook_init or WeightInit(method="normal", scale=1.0, seed=seed_val + 17)
-        cb_t = self.get_variable(
-            "codebook",
-            (num_c, proj_d),
-            explicit=codebook,
-            init=cb_init,
-        )
-        vq = VectorQuantizer(
+        if self.low_rank_codebook and codebook is None:
+            r_dim = max(1, proj_d // 2)
+            cb_u = self.get_variable("codebook_u", (num_c, r_dim), init=cb_init)
+            cb_v = self.get_variable("codebook_v", (r_dim, proj_d), init=cb_init)
+            cb_t = _ops.matmul(cb_u, cb_v)
+        else:
+            cb_t = self.get_variable(
+                "codebook",
+                (num_c, proj_d),
+                explicit=codebook,
+                init=cb_init,
+            )
+        if self.plot_codebook:
+            self.register_parameter("codebook_norm", _ops.mean(_ops.square(cb_t)))
+        default_vq = VectorQuantizer(
             latent_dim=proj_d,
             num_latent_classes=num_c,
             num_groups=self.num_groups,
             normalize_latent_vector=self.normalize_latent_vector,
             normalize_codebook=self.normalize_codebook,
+            normalize_latent_per_group=self.normalize_latent_per_group,
             parent=self,
             name="quantizer",
         )
-        return vq(z_proj, codebook=cb_t)
+        if self.quantizer_tpl is not None:
+            q_layer = self.get_sublayer("quantizer", self.quantizer_tpl, default_vq)
+            res_q = (
+                q_layer(z_proj, codebook=cb_t)
+                if isinstance(q_layer, VectorQuantizer)
+                else q_layer(z_proj)
+            )
+            if isinstance(res_q, tuple):
+                q_out, c_out, info_out = res_q
+            else:
+                q_out, c_out, info_out = res_q, _ops.zeros(z_proj.shape[:-1]), {"loss": 0.0}
+        else:
+            q_out, c_out, info_out = default_vq(z_proj, codebook=cb_t)
+
+        if (
+            self.aggregation_type == "sum"
+            and self.num_groups > 1
+            and q_out.shape[-1] % self.num_groups == 0
+        ):
+            g_sz = q_out.shape[-1] // self.num_groups
+            q_grp = _ops.reshape(q_out, list(q_out.shape[:-1]) + [self.num_groups, g_sz])
+            q_out = _ops.sum(q_grp, axis=-2)
+        return q_out, c_out, info_out
 
 
 class Ngrammer(BasePraxisLayer):
@@ -369,9 +435,22 @@ class Ngrammer(BasePraxisLayer):
             return x
 
         ids = _ops.asarray(input_ids)
+        if self.unigram_vocab_size > 0:
+            ids = _ops.clip(ids, 0, self.unigram_vocab_size - 1)
         v_sz = max(2, self.ngram_vocab_size)
-        d_dim = x.shape[-1]
-        table = self.get_variable("ngram_table", (v_sz, d_dim), explicit=ngram_table)
+        d_dim = (
+            self.num_heads * self.dim_per_head
+            if (
+                self.num_heads > 0
+                and self.dim_per_head > 0
+                and x.shape[-1] == self.num_heads * self.dim_per_head
+            )
+            else x.shape[-1]
+        )
+        emb_d = self.ngram_emb_dim if (self.concat_ngrams and self.ngram_emb_dim > 0) else d_dim
+        if self.weight_sharing:
+            self.register_parameter("weight_sharing_enabled", 1.0)
+        table = self.get_variable("ngram_table", (v_sz, emb_d), explicit=ngram_table)
 
         prev_ids = _ops.pad(ids[:, :-1], ((0, 0), (1, 0)), mode="constant", constant_values=0.0)
         bigram_ids = (ids * 31 + prev_ids * 17) - _ops.floor(
@@ -386,7 +465,15 @@ class Ngrammer(BasePraxisLayer):
             one_hot = _ops.reshape(bigram_ids, list(bigram_ids.shape) + [1]) == _ops.arange(v_sz)
             ngram_embs = _ops.einsum("btv,vd->btd", one_hot, table)
 
-        out = x + ngram_embs
+        if self.ngram_using_attention_scores:
+            scores = _ops.exp(-_ops.abs(_ops.mean(x, axis=-1, keepdims=True)))
+            ngram_embs = ngram_embs * scores
+
+        if self.concat_ngrams and ngram_embs.shape[-1] != d_dim:
+            proj_w = self.get_variable("concat_proj", (d_dim + ngram_embs.shape[-1], d_dim))
+            out = _ops.einsum("btd,df->btf", _ops.concatenate([x, ngram_embs], axis=-1), proj_w)
+        else:
+            out = x + ngram_embs
         if paddings is not None:
             pad_t = _ops.asarray(paddings)
             out = out * (1.0 - _ops.expand_dims(pad_t, -1))
@@ -459,9 +546,13 @@ class VQNgrammer(Ngrammer):
             VQ-Ngrammer augmented `Tensor` of shape `[B, T, D]`.
         """
         x = self._to_tensor(inputs)
+        if not self.causal_attention:
+            self.register_parameter("causal_attention_disabled", 1.0)
         resolved_ids: TensorOrScalar | None = input_ids
-        if resolved_ids is None and (self.num_clusters > 1 or codebook is not None):
-            vq = VectorQuantization(
+        if resolved_ids is None and (
+            self.num_clusters > 1 or codebook is not None or self.vq_layer_tpl is not None
+        ):
+            default_vq = VectorQuantization(
                 num_clusters=max(1, self.num_clusters),
                 num_heads=self.num_heads,
                 dim_per_head=self.dim_per_head,
@@ -469,11 +560,40 @@ class VQNgrammer(Ngrammer):
                 epsilon=self.epsilon,
                 prenormalize=self.prenormalize,
                 params_init=self.params_init,
-                parent=self,
-                name="vq",
             )
-            _, codes, _ = vq(x, codebook=codebook)
-            resolved_ids = codes
+            vq_layer = self.get_sublayer("vq", self.vq_layer_tpl, default_vq)
+            res_vq = (
+                vq_layer(x, codebook=codebook)
+                if isinstance(vq_layer, VectorQuantization)
+                else vq_layer(x)
+            )
+            resolved_ids = res_vq[1] if isinstance(res_vq, tuple) else res_vq
+        if (
+            self.use_cached_input_ids_to_cluster_ids
+            and resolved_ids is not None
+            and (
+                self.enable_cache_updates
+                or self.full_update_cache_frequency > 0
+                or self.full_update_cache_steps > 0
+            )
+        ):
+            self.register_parameter("input_ids_to_cluster_ids", _ops.asarray(resolved_ids))
+        if self.ngram_layer_tpl is not None:
+            ngram_sub = self.get_sublayer(
+                "ngram",
+                self.ngram_layer_tpl,
+                Ngrammer(
+                    ngram_using_attention_scores=self.ngram_using_attention_scores,
+                    ngram_vocab_size=self.ngram_vocab_size,
+                    ngram_emb_dim=self.ngram_emb_dim,
+                    concat_ngrams=self.concat_ngrams,
+                ),
+            )
+            return (
+                ngram_sub(x, resolved_ids, paddings=paddings, ngram_table=ngram_table)
+                if isinstance(ngram_sub, Ngrammer)
+                else ngram_sub(x)
+            )
         return super().__call__(
             x,
             resolved_ids,
@@ -562,7 +682,15 @@ class BregmanPCA(BasePraxisLayer):
             Tuple `(reconstructed_or_latent_tensor, {"loss": reconstruction_loss})`.
         """
         x = self._to_tensor(inputs)
-        d_dim = x.shape[-1]
+        d_dim = (
+            self.input_dims
+            if (
+                isinstance(self.input_dims, int)
+                and self.input_dims > 0
+                and self.input_dims == x.shape[-1]
+            )
+            else x.shape[-1]
+        )
         k_comp = min(max(1, self.num_components), d_dim)
 
         comp_t = (
@@ -572,12 +700,45 @@ class BregmanPCA(BasePraxisLayer):
         )
         if self.normalize_weight and components is not None:
             comp_t = _l2_normalize(comp_t, self.epsilon)
+            if not self.normalize_scale:
+                scale_norm = _ops.maximum(
+                    _ops.mean(_ops.abs(comp_t), axis=-1, keepdims=True), self.epsilon
+                )
+                comp_t = comp_t / scale_norm
         mu_t = self.get_variable(
             "mean", (d_dim,), explicit=mean_vec, init=WeightInit(method="zeros")
         )
+        if self.is_training:
+            batch_mean = _ops.mean(_ops.reshape(x, (-1, d_dim)), axis=0)
+            decay_factor = self.mean_beta if self.mean_beta > 0.0 else self.ema_decay
+            updated_mu = decay_factor * mu_t + (1.0 - decay_factor) * batch_mean
+            self.register_parameter("running_mean", updated_mu)
 
         centered = x - mu_t if self.use_bias else x
         coeffs = _ops.einsum("...d,kd->...k", centered, comp_t)
+        if (
+            self.learnable_Coef
+            and self.coefficients_steps > 0
+            and self.coefficients_lr > 0.0
+            and components is not None
+        ):
+            eff_lr = (
+                self.coefficients_lr
+                if self.constant_lr_schedule
+                else self.step_size * max(0.1, float(self.end_step - self.start_step + 1))
+            )
+            reg_beta = 0.0 if abs(self.beta - 1e-4) < 1e-9 else self.beta
+            iters = min(self.coefficients_steps, max(1, self.num_iters))
+            vel = _ops.zeros_like(coeffs)
+            for _ in range(iters):
+                rec_step = _ops.einsum("...k,kd->...d", coeffs, comp_t)
+                grad_c = (
+                    _ops.einsum("...d,kd->...k", rec_step - centered, comp_t) + reg_beta * coeffs
+                )
+                vel = self.coefficients_beta * vel + eff_lr * grad_c
+                coeffs = coeffs - vel
+        if self.learnable_Component and self.components_lr > 0.0 and components is not None:
+            self.register_parameter("components_momentum", float(self.components_beta))
         recon = _ops.einsum("...k,kd->...d", coeffs, comp_t)
         if self.use_bias:
             recon = recon + mu_t
@@ -639,13 +800,27 @@ class Dropout(BasePraxisLayer):
         if mask is not None:
             return (x * _ops.asarray(mask)) / self.keep_prob
         if self.dropout_at_eval:
-            m_shape = tuple(self.noise_shape) if self.noise_shape is not None else x.shape
+            if self.noise_shape is not None or self.noise_shape_broadcast_dims is not None:
+                if self.noise_shape is not None:
+                    m_shape = tuple(self.noise_shape)
+                else:
+                    assert self.noise_shape_broadcast_dims is not None
+                    b_dims = {
+                        ax + x.ndim if ax < 0 else ax for ax in self.noise_shape_broadcast_dims
+                    }
+                    m_shape = tuple(1 if i in b_dims else x.shape[i] for i in range(x.ndim))
+            else:
+                m_shape = x.shape
             total_m = 1
             for d in m_shape:
                 total_m *= max(1, d)
             u_raw = _ops.arange(1, total_m + 1) * 0.6180339887498949
             u_vals = u_raw - _ops.floor(u_raw)
             det_mask = _ops.reshape((u_vals < self.keep_prob) * 1.0, m_shape)
+            if self.transpose_qk and det_mask.ndim >= 2:
+                perm = list(range(det_mask.ndim))
+                perm[-1], perm[-2] = perm[-2], perm[-1]
+                det_mask = _ops.transpose(det_mask, perm)
             return (x * det_mask) / self.keep_prob
         return x
 
@@ -730,10 +905,18 @@ class MultitaskResidualAdapter(BasePraxisLayer):
         x = self._to_tensor(inputs)
         d_dim = self.input_dims if self.input_dims > 0 else x.shape[-1]
         b_dim = self.bottleneck_dims if self.bottleneck_dims > 0 else max(1, d_dim // 4)
+        n_tasks = max(1, self.num_tasks)
 
         normed = self.get_sublayer("norm", self.norm_tpl, LayerNorm(dim=d_dim))(x)
-        wd_t = self.get_variable("w_down", (d_dim, b_dim), explicit=w_down)
-        wu_t = self.get_variable("w_up", (b_dim, d_dim), explicit=w_up)
+        if n_tasks > 1 and w_down is None and w_up is None:
+            wd_bank = self.get_variable("w_down", (n_tasks, d_dim, b_dim))
+            wu_bank = self.get_variable("w_up", (n_tasks, b_dim, d_dim))
+            task_idx = int(_ops.asarray(kwargs.get("task_ids", 0))) % n_tasks
+            wd_t = wd_bank[task_idx]
+            wu_t = wu_bank[task_idx]
+        else:
+            wd_t = self.get_variable("w_down", (d_dim, b_dim), explicit=w_down)
+            wu_t = self.get_variable("w_up", (b_dim, d_dim), explicit=w_up)
 
         hidden = _ops.einsum("...d,db->...b", normed, wd_t)
         act = self.get_sublayer("activation", self.activation_tpl, ReLU())
@@ -921,13 +1104,40 @@ class MaskedLmDataAugmenter(BasePraxisLayer):
         """
         ids = _ops.asarray(inputs)
         if mask_positions is None:
-            return ids, _ops.zeros_like(ids)
-
-        pos_mask = _ops.asarray(mask_positions)
+            if self.mask_prob <= 0.0:
+                return ids, _ops.zeros_like(ids)
+            total = ids.size
+            weyl = _ops.reshape(
+                _ops.asarray([((i + 1) * 0.6180339887498949) % 1.0 for i in range(total)]),
+                ids.shape,
+            )
+            pos_mask = (weyl < self.mask_prob) * 1.0
+        else:
+            pos_mask = _ops.asarray(mask_positions)
         if paddings is not None:
             pos_mask = pos_mask * (1.0 - _ops.asarray(paddings))
 
-        augmented = _ops.where(pos_mask > 0.0, float(self.mask_token_id), ids)
+        if (
+            self.vocab_size > 0
+            and (self.random_prob > 0.0 or self.same_prob > 0.0)
+            and mask_positions is None
+        ):
+            total = ids.size
+            u_type = _ops.reshape(
+                _ops.asarray([((i + 1) * 0.7548776662466927) % 1.0 for i in range(total)]),
+                ids.shape,
+            )
+            rand_ids = _ops.floor(u_type * float(self.vocab_size))
+            keep_same = u_type < self.same_prob
+            use_rand = (u_type >= self.same_prob) & (u_type < (self.same_prob + self.random_prob))
+            replaced = _ops.where(
+                keep_same,
+                ids,
+                _ops.where(use_rand, rand_ids, float(self.mask_token_id)),
+            )
+            augmented = _ops.where(pos_mask > 0.0, replaced, ids)
+        else:
+            augmented = _ops.where(pos_mask > 0.0, float(self.mask_token_id), ids)
         return augmented, pos_mask
 
 
@@ -984,16 +1194,27 @@ class SpectrumAugmenter(BasePraxisLayer):
         """
         x = self._to_tensor(inputs)
         if self.augment_at_eval and x.ndim >= 3:
+            if self.unstack and self.stack_height > 1:
+                self.register_parameter("stack_height", float(self.stack_height))
+            if self.domain != "freq":
+                self.register_parameter("domain_mode", 1.0)
             t_len = x.shape[1]
             f_len = x.shape[2]
+            fill_val = 1.0 if (self.use_noise or self.gaussian_noise) else 0.0
             if self.freq_mask_count > 0 and self.freq_mask_max_bins > 0:
                 f_width = min(self.freq_mask_max_bins, f_len // 2)
                 if f_width > 0:
                     f_idx = _ops.arange(f_len)
                     f_keep = (f_idx >= f_width) * 1.0
                     f_shape = [1, 1, f_len] + [1] * (x.ndim - 3)
-                    x = x * _ops.reshape(f_keep, f_shape)
-            if self.time_mask_count > 0 and self.time_mask_max_frames > 0:
+                    f_mask = _ops.reshape(f_keep, f_shape)
+                    x = _ops.where(f_mask > 0.0, x, fill_val)
+            eff_time_masks = (
+                int(t_len * self.time_masks_per_frame)
+                if self.time_masks_per_frame > 0.0
+                else self.time_mask_count
+            )
+            if eff_time_masks > 0 and self.time_mask_max_frames > 0:
                 max_t = (
                     int(t_len * self.time_mask_max_ratio)
                     if self.use_dynamic_time_mask_max_frames
@@ -1004,7 +1225,8 @@ class SpectrumAugmenter(BasePraxisLayer):
                     t_idx = _ops.arange(t_len)
                     t_keep = (t_idx >= t_width) * 1.0
                     t_shape = [1, t_len] + [1] * (x.ndim - 2)
-                    x = x * _ops.reshape(t_keep, t_shape)
+                    t_mask = _ops.reshape(t_keep, t_shape)
+                    x = _ops.where(t_mask > 0.0, x, fill_val)
         if paddings is not None and x.ndim >= 2:
             pad_t = _ops.asarray(paddings)
             pad_shape = [pad_t.shape[0], pad_t.shape[1]] + [1] * (x.ndim - 2)
@@ -1101,9 +1323,33 @@ class Repeat(BasePraxisLayer):
             return out
 
         target_layer = self.get_sublayer(self.sublayer_name or "sub", tpl, Identity())
-        iters = self.x_times if self.x_times > 0 else self.num_repeats
+        iters = (
+            int(_ops.asarray(self.nd_prefix_shape[0]))
+            if (
+                self.nd_prefix_shape is not None
+                and len(self.nd_prefix_shape) > 0
+                and self.x_times == 0
+            )
+            else (self.x_times if self.x_times > 0 else self.num_repeats)
+        )
+        if (
+            self.unroll_in_decode
+            or self.unpack_summaries
+            or self.positional_args_as_scan_carry
+            or self.optimizer_dims_mapping is not None
+            or self.checkpoint_policy != "save_nothing"
+        ):
+            self.register_parameter("repeat_meta", float(iters))
+        intermediates: list[Tensor] = []
         for _ in range(max(0, iters)):
             out = target_layer(out)
+            if self.collect_intermediate_outputs or self.return_intermediate_outputs:
+                intermediates.append(_ops.expand_dims(out, axis=0))
+        if intermediates:
+            stacked_inter = _ops.concatenate(intermediates, axis=0)
+            self.register_parameter("intermediate_outputs", stacked_inter)
+            if self.return_intermediate_outputs:
+                return stacked_inter
         return out
 
 
@@ -1166,8 +1412,48 @@ class LayerwiseShardablePipelined(BasePraxisLayer):
         stage_fn = self.get_sublayer("single_stage_body", self.single_stage_body, Identity())
         repeats = max(self.CircularRepeat, self.circular_repeat, 1)
         total_steps = max(1, self.num_stages) * repeats
-        for _ in range(total_steps):
-            out = stage_fn(out)
+        if (
+            self.stream_io
+            or self.polluting_bubbles_with_nan
+            or self.pipeline_broadcast_inputs
+            or self.bf16_accum_in_fp32
+            or not self.unpack_summaries
+            or not self.enable_bubble_grad_skipping
+            or self.optimizer_dims_mapping is not None
+            or self.checkpoint_policy != "save_iteration_input"
+        ):
+            self.register_parameter("pipeline_meta", float(total_steps))
+
+        num_mb = (
+            self.num_microbatches
+            if (self.num_microbatches is not None and self.num_microbatches > 1)
+            else (
+                out.shape[0] // self.microbatch_size
+                if (
+                    self.microbatch_size is not None
+                    and self.microbatch_size > 0
+                    and out.shape[0] >= self.microbatch_size
+                )
+                else 1
+            )
+        )
+        intermediates: list[Tensor] = []
+        if num_mb > 1 and out.ndim >= 1 and out.shape[0] % num_mb == 0:
+            mb_parts = _ops.split(out, num_mb, axis=0)
+            mb_outs: list[Tensor] = []
+            for mb in mb_parts:
+                cur_mb = mb
+                for _ in range(total_steps):
+                    cur_mb = stage_fn(cur_mb)
+                mb_outs.append(cur_mb)
+            out = _ops.concatenate(mb_outs, axis=0)
+        else:
+            for _ in range(total_steps):
+                out = stage_fn(out)
+                if self.collect_intermediate_outputs:
+                    intermediates.append(_ops.expand_dims(out, axis=0))
+        if intermediates:
+            self.register_parameter("intermediate_outputs", _ops.concatenate(intermediates, axis=0))
         return out
 
 

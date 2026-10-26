@@ -24,17 +24,23 @@ FORBIDDEN_NAMES: frozenset[str] = frozenset(
         "vars",
         "eval",
         "exec",
+        "globals",
+        "locals",
+        "compile",
         "__getattr__",
         "__setattr__",
         "__getattribute__",
+        "__delattr__",
         "__dict__",
+        "__class__",
+        "__bases__",
         "__mro__",
         "__annotations__",
         "__subclasses__",
     }
 )
 
-_TYPE_IGNORE_PATTERN: re.Pattern[str] = re.compile(r"#\s*type\s*:\s*ignore\b")
+_TYPE_IGNORE_REGEX: str = r"#\s*type\s*:\s*ignore\b"
 
 
 def check_comments(source: str, filepath: Path) -> list[str]:
@@ -50,7 +56,7 @@ def check_comments(source: str, filepath: Path) -> list[str]:
     violations: list[str] = []
     reader = io.StringIO(source).readline
     for tok in tokenize.generate_tokens(reader):
-        if tok.type == tokenize.COMMENT and _TYPE_IGNORE_PATTERN.search(tok.string):
+        if tok.type == tokenize.COMMENT and re.search(_TYPE_IGNORE_REGEX, tok.string):
             violations.append(
                 f"{filepath}:{tok.start[0]}: Forbidden type-ignore comment '{tok.string.strip()}'"
             )
@@ -86,10 +92,8 @@ def check_ast(tree: ast.AST, filepath: Path) -> list[str]:
                     alias.asname is not None and alias.asname in FORBIDDEN_NAMES
                 ):
                     violations.append(f"{filepath}:{node.lineno}: Forbidden import '{alias.name}'")
-        elif isinstance(node, ast.ClassDef):
-            for kw in node.keywords:
-                if kw.arg == "metaclass":
-                    violations.append(f"{filepath}:{node.lineno}: Forbidden 'metaclass' usage")
+        elif isinstance(node, ast.ClassDef) and any(kw.arg == "metaclass" for kw in node.keywords):
+            violations.append(f"{filepath}:{node.lineno}: Forbidden 'metaclass' usage")
 
     return violations
 

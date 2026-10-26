@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from zero_pax import _tensor_ops as _ops
 from zero_pax.praxis.base import BasePraxisLayer, LayerTpl, instantiate_layer
@@ -11,6 +11,7 @@ from zero_pax.praxis.layers.attentions import DotProductAttention
 from zero_pax.praxis.layers.convolutions import Conv2D, ConvBNAct, LightConv1D
 from zero_pax.praxis.layers.embeddings import FullSoftmax, PositionalEmbedding2D
 from zero_pax.praxis.layers.linear_pooling import (
+    Bias,
     FeedForward,
     GlobalPooling,
     Linear,
@@ -18,6 +19,7 @@ from zero_pax.praxis.layers.linear_pooling import (
     Pooling,
 )
 from zero_pax.praxis.layers.normalizations import BatchNorm, LayerNorm
+from zero_pax.praxis.layers.quantization_utils import Dropout, StochasticResidual
 from zero_pax.praxis.layers.transformers import StackedTransformer, TransformerFeedForward
 from zero_pax.types import Tensor, TensorOrScalar, WeightInit
 
@@ -154,6 +156,20 @@ class VanillaNet(BasePraxisLayer):
         if self.entryflow_conv_params is not None:
             stem = self.get_sublayer("entryflow_conv", self.entryflow_conv_params, Identity())
             out = stem(out)
+        elif tuple(self.entryflow_conv_kernel) != (7, 7) or self.entryflow_conv_stride != (2, 2):
+            kh = self.entryflow_conv_kernel[0] if len(self.entryflow_conv_kernel) >= 1 else 3
+            kw = self.entryflow_conv_kernel[1] if len(self.entryflow_conv_kernel) >= 2 else kh
+            c_stem = self.channels[0] if self.channels else out.shape[-1]
+            stem_conv = self.get_sublayer(
+                "entryflow_conv",
+                None,
+                Conv2D(
+                    filter_shape=(kh, kw, out.shape[-1], c_stem),
+                    filter_stride=self.entryflow_conv_stride,
+                    params_init=self.params_init,
+                ),
+            )
+            out = stem_conv(out)
 
         for s_idx, (stride, ch, n_blk, k_sz) in enumerate(
             zip(self.strides, self.channels, self.blocks, self.kernels)
@@ -308,8 +324,18 @@ class ResNetBlock(BasePraxisLayer):
         else:
             sc = x
 
+        if self.residual_droppath_prob > 0.0:
+            stoch = self.get_sublayer(
+                "droppath",
+                None,
+                StochasticResidual(survival_prob=max(0.0, 1.0 - self.residual_droppath_prob)),
+            )
+            combined = stoch(sc, h) if isinstance(stoch, StochasticResidual) else stoch(h + sc)
+        else:
+            combined = h + sc
+
         post_act = self.get_sublayer("post_act", self.post_activation, act)
-        return post_act(h + sc)
+        return post_act(combined)
 
 
 class ResNet(BasePraxisLayer):
@@ -363,6 +389,20 @@ class ResNet(BasePraxisLayer):
         if self.entryflow_conv_params is not None:
             stem = self.get_sublayer("entryflow_conv", self.entryflow_conv_params, Identity())
             out = stem(out)
+        elif tuple(self.entryflow_conv_kernel) != (7, 7, 3) or self.entryflow_conv_stride != (2, 2):
+            kh = self.entryflow_conv_kernel[0] if len(self.entryflow_conv_kernel) >= 1 else 3
+            kw = self.entryflow_conv_kernel[1] if len(self.entryflow_conv_kernel) >= 2 else kh
+            c_stem = self.channels[0] if self.channels else out.shape[-1]
+            stem_conv = self.get_sublayer(
+                "entryflow_conv",
+                None,
+                Conv2D(
+                    filter_shape=(kh, kw, out.shape[-1], c_stem),
+                    filter_stride=self.entryflow_conv_stride,
+                    params_init=self.params_init,
+                ),
+            )
+            out = stem_conv(out)
         if self.entry_max_pool and out.shape[1] >= 3 and out.shape[2] >= 3:
             pool_stem = Pooling(window_shape=(3, 3), window_stride=(2, 2), pooling_type="MAX")
             res_pool = pool_stem(out)
@@ -388,6 +428,8 @@ class ResNet(BasePraxisLayer):
                     name=f"stage_{s_idx}_block_{b_idx}",
                 )
                 out = stage_blk(out)
+            if self.return_block_features:
+                self.register_parameter(f"block_feature_{s_idx}", out)
 
         if self.output_spatial_pooling_params is not None:
             pool_exit = self.get_sublayer(
@@ -490,6 +532,25 @@ class Conformer(BasePraxisLayer):
         n_heads = max(1, self.atten_num_heads)
         k_sz = max(1, self.kernel_size)
 
+        base_drop = self.dropout_prob if self.dropout_prob is not None else 0.0
+        eff_ffn_res_drop = (
+            self.ffn_residual_dropout if self.ffn_residual_dropout is not None else base_drop
+        )
+        eff_ffn_relu_drop = (
+            self.ffn_relu_dropout
+            if self.ffn_relu_dropout is not None
+            else (self.relu_dropout if self.relu_dropout is not None else base_drop)
+        )
+        eff_atten_drop = self.atten_dropout if self.atten_dropout is not None else base_drop
+        eff_atten_res_drop = (
+            self.atten_residual_dropout if self.atten_residual_dropout is not None else base_drop
+        )
+        eff_conv_res_drop = (
+            self.conv_residual_dropout if self.conv_residual_dropout is not None else base_drop
+        )
+        if self.remat:
+            self.register_parameter("remat_enabled", 1.0)
+
         act_tpl = self.ff_activation_tpl if self.ff_activation_tpl is not None else Swish()
 
         default_ff_start = TransformerFeedForward(
@@ -497,6 +558,8 @@ class Conformer(BasePraxisLayer):
             hidden_dims=f_hid,
             activation_tpl=act_tpl,
             residual_weight=self.ff_residual_weight,
+            residual_dropout_prob=eff_ffn_res_drop,
+            relu_dropout_prob=eff_ffn_relu_drop,
             params_init=self.params_init,
         )
         ff_start = self.get_sublayer("fflayer_start", self.fflayer_start_tpl, default_ff_start)
@@ -511,11 +574,22 @@ class Conformer(BasePraxisLayer):
             input_dim=d_model,
             num_heads=n_heads,
             dim_per_head=max(1, d_model // n_heads),
+            atten_dropout_prob=eff_atten_drop,
             params_init=self.params_init,
         )
         attn = self.get_sublayer("trans_atten", self.trans_atten_tpl, default_attn)
+        atten_res_drop_layer = self.get_sublayer(
+            "atten_res_dropout",
+            None,
+            Dropout(keep_prob=max(0.0, 1.0 - eff_atten_res_drop))
+            if eff_atten_res_drop > 0.0
+            else Identity(),
+        )
         default_lconv = LightConv1D(
-            input_dims=d_model, kernel_size=k_sz, params_init=self.params_init
+            input_dims=d_model,
+            kernel_size=k_sz,
+            dropout_prob=eff_conv_res_drop,
+            params_init=self.params_init,
         )
         lconv = self.get_sublayer("lconv", self.lconv_tpl, default_lconv)
 
@@ -526,7 +600,7 @@ class Conformer(BasePraxisLayer):
                 if isinstance(attn, DotProductAttention)
                 else attn(norm_x)
             )
-            x = x + a_out
+            x = x + atten_res_drop_layer(a_out)
             c_out = lconv(x, paddings=paddings) if isinstance(lconv, LightConv1D) else lconv(x)
             x = x + c_out
         elif self.layer_order == "conv_before_mhsa":
@@ -538,7 +612,7 @@ class Conformer(BasePraxisLayer):
                 if isinstance(attn, DotProductAttention)
                 else attn(norm_x)
             )
-            x = x + a_out
+            x = x + atten_res_drop_layer(a_out)
         elif self.layer_order == "mhsa":
             norm_x = ln_attn(x)
             a_out = (
@@ -546,7 +620,7 @@ class Conformer(BasePraxisLayer):
                 if isinstance(attn, DotProductAttention)
                 else attn(norm_x)
             )
-            x = x + a_out
+            x = x + atten_res_drop_layer(a_out)
         else:
             c_out = lconv(x, paddings=paddings) if isinstance(lconv, LightConv1D) else lconv(x)
             x = x + c_out
@@ -556,6 +630,8 @@ class Conformer(BasePraxisLayer):
             hidden_dims=f_hid,
             activation_tpl=act_tpl,
             residual_weight=self.ff_residual_weight,
+            residual_dropout_prob=eff_ffn_res_drop,
+            relu_dropout_prob=eff_ffn_relu_drop,
             params_init=self.params_init,
         )
         ff_end = (
@@ -641,7 +717,7 @@ class VitEntryLayers(BasePraxisLayer):
             gh = self.pos_emb_shapes[0] if self.pos_emb_shapes[0] > 0 else 1
             gw = self.pos_emb_shapes[1] if self.pos_emb_shapes[1] > 0 else n_tok
 
-        in_d = patches.shape[-1]
+        in_d = self.input_dims if self.input_dims > 0 else patches.shape[-1]
         out_d = self.output_dims if self.output_dims > 0 else in_d
         lin = self.get_sublayer(
             "patch_projection",
@@ -660,6 +736,11 @@ class VitEntryLayers(BasePraxisLayer):
             if isinstance(lin, Linear) and w_patch is not None
             else (patches if in_d == out_d and w_patch is None else lin(patches))
         )
+        if self.input_fc_has_bias:
+            fc_bias = self.get_sublayer(
+                "patch_bias", None, Bias(dims=out_d, params_init=self.params_init)
+            )
+            tokens = fc_bias(tokens)
 
         if self.prepend_cls_tokens > 0:
             prep_t = self.get_variable(
@@ -686,6 +767,13 @@ class VitEntryLayers(BasePraxisLayer):
         pos = pe_2d(tokens)
         if pos.shape[1] == tokens.shape[1] and pos.shape[2] == tokens.shape[2]:
             tokens = tokens + pos
+        if self.pos_emb_dropout_prob > 0.0:
+            pe_drop = self.get_sublayer(
+                "pos_emb_dropout",
+                None,
+                Dropout(keep_prob=max(0.0, 1.0 - self.pos_emb_dropout_prob)),
+            )
+            tokens = pe_drop(tokens)
         return tokens
 
 
@@ -768,6 +856,14 @@ class VitExitLayers(BasePraxisLayer):
             )
             feat = pre_ff(feat)
 
+        if self.output_dropout_prob > 0.0:
+            out_drop = self.get_sublayer(
+                "output_dropout",
+                None,
+                Dropout(keep_prob=max(0.0, 1.0 - self.output_dropout_prob)),
+            )
+            feat = out_drop(feat)
+
         if w_out is not None or feat.shape[-1] != d_out:
             lin = self.get_sublayer(
                 "output_fc",
@@ -822,6 +918,8 @@ class VisionTransformer(BasePraxisLayer):
         Returns:
             ViT output representation `Tensor`.
         """
+        if self.full_data_parallel_on_entry_exit:
+            self.register_parameter("full_data_parallel", 1.0)
         entry = self.get_sublayer(
             "entry", self.entry_layers_tpl, VitEntryLayers(params_init=self.params_init)
         )
@@ -864,6 +962,36 @@ class ClassificationModel(BasePraxisLayer):
     label_field: str = "label_probs"
     label_smoothing_prob: float = 0.0
 
+    def _extract_batch_inputs(
+        self,
+        inputs: TensorOrScalar,
+        labels: TensorOrScalar | None,
+        kwargs: Mapping[str, TensorOrScalar],
+    ) -> tuple[TensorOrScalar, TensorOrScalar | None]:
+        """Resolve feature tensor and optional labels from positional args, batch mapping, or `kwargs`.
+
+        Args:
+            inputs: Positional input tensor or batch mapping.
+            labels: Optional positional label tensor.
+            kwargs: Additional keyword arguments.
+
+        Returns:
+            Pair `(resolved_inputs, resolved_labels)`.
+        """
+        resolved_in = inputs
+        resolved_lbl = labels
+        if isinstance(inputs, Mapping):
+            resolved_in = (
+                inputs[self.input_field]
+                if self.input_field in inputs
+                else next(iter(inputs.values()))
+            )
+            if resolved_lbl is None and self.label_field in inputs:
+                resolved_lbl = inputs[self.label_field]
+        if resolved_lbl is None and self.label_field in kwargs:
+            resolved_lbl = kwargs[self.label_field]
+        return resolved_in, resolved_lbl
+
     def __call__(
         self,
         inputs: TensorOrScalar,
@@ -874,7 +1002,7 @@ class ClassificationModel(BasePraxisLayer):
         """Extract features via `network_tpl` and compute probabilities/loss via `softmax_tpl`.
 
         Args:
-            inputs: Input feature tensor.
+            inputs: Input feature tensor or batch mapping keyed by `self.input_field`.
             labels: Optional target class probabilities or one-hot labels.
             *args: Additional positional arguments.
             **kwargs: Additional keyword arguments.
@@ -882,8 +1010,9 @@ class ClassificationModel(BasePraxisLayer):
         Returns:
             Class probabilities or per-example loss `Tensor`.
         """
+        raw_in, raw_lbl = self._extract_batch_inputs(inputs, labels, kwargs)
         net = self.get_sublayer("network", self.network_tpl, Identity())
-        feats = net(inputs)
+        feats = net(raw_in)
         sm = self.get_sublayer(
             "softmax",
             self.softmax_tpl,
@@ -892,7 +1021,7 @@ class ClassificationModel(BasePraxisLayer):
             ),
         )
         if isinstance(sm, FullSoftmax):
-            return sm(feats, class_probabilities=labels)
+            return sm(feats, class_probabilities=raw_lbl)
         return sm(feats)
 
 
